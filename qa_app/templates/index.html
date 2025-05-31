@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amazon EMR 升级助手</title>
+    <link href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="preload" href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css" as="style">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        /* 基础样式备份 */
+        body {
+            background-color: #f3f4f6;
+            margin: 0;
+            padding: 0;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        textarea, button, input {
+            font-family: inherit;
+        }
+        .hidden {
+            display: none;
+        }
+        /* 思考过程折叠区域样式 */
+        .thinking-details summary {
+            list-style: none;
+            position: relative;
+            padding-left: 1.5rem;
+        }
+        .thinking-details summary::-webkit-details-marker {
+            display: none;
+        }
+        .thinking-details summary::before {
+            content: '▶';
+            position: absolute;
+            left: 0;
+            transform: translateY(-2px);
+            transition: transform 0.2s;
+        }
+        .thinking-details[open] summary::before {
+            transform: rotate(90deg) translateX(-2px);
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold text-center mb-4 text-gray-800">Amazon EMR 升级助手</h1>
+        <p class="text-center text-gray-600 mb-8">为您提供 EMR 版本升级的注意事项和 SQL 转换建议</p>
+        
+        <div class="max-w-3xl mx-auto">
+            <!-- 搜索框部分 -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <div class="flex flex-col gap-4">
+                    <textarea 
+                        id="searchInput" 
+                        class="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                        rows="4"
+                        placeholder="请输入您的问题，例如：'从 EMR 5.x 升级到 6.x 需要注意什么？' 或 '如何将 Hive SQL 转换为 Spark SQL？'"
+                        style="min-height: 120px;"
+                    ></textarea>
+                    <button onclick="search()" 
+                            class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        搜索
+                    </button>
+                </div>
+            </div>
+
+            <div id="results" class="mt-8 space-y-4">
+                <!-- 搜索结果将在这里动态显示 -->
+            </div>
+
+            <div id="loading" class="hidden text-center py-4">
+                <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
+            </div>
+        </div>
+    </div>
+
+    <noscript>
+        <style>
+            .js-only { display: none; }
+        </style>
+        <div class="text-center text-red-500 p-4">
+            请启用 JavaScript 以获得完整的功能体验
+        </div>
+    </noscript>
+
+    <script>
+        async function search() {
+            const query = document.getElementById('searchInput').value;
+            if (!query.trim()) return;
+
+            const loading = document.getElementById('loading');
+            const results = document.getElementById('results');
+            
+            loading.classList.remove('hidden');
+            results.innerHTML = '';
+
+            try {
+                const response = await fetch('/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+
+                const data = await response.json();
+                
+                if (data.success) {
+                    let htmlContent = '';
+                    
+                    // 显示 AI 思考过程（如果有）- 使用可折叠区域
+                    if (data.thinking) {
+                        const thinkingDiv = document.createElement('div');
+                        thinkingDiv.className = 'bg-yellow-50 rounded-lg shadow-md p-6 mb-6';
+                        
+                        const detailsElem = document.createElement('details');
+                        detailsElem.className = 'thinking-details';
+                        
+                        const summaryElem = document.createElement('summary');
+                        summaryElem.className = 'text-xl font-semibold mb-2 text-yellow-800 cursor-pointer hover:text-yellow-600';
+                        summaryElem.textContent = 'AI 思考过程 (点击展开/折叠)';
+                        
+                        const contentDiv = document.createElement('div');
+                        contentDiv.className = 'text-gray-700 whitespace-pre-wrap prose mt-3 pl-2 border-l-2 border-yellow-300';
+                        contentDiv.textContent = data.thinking;
+                        
+                        detailsElem.appendChild(summaryElem);
+                        detailsElem.appendChild(contentDiv);
+                        thinkingDiv.appendChild(detailsElem);
+                        
+                        const tempContainer = document.createElement('div');
+                        tempContainer.appendChild(thinkingDiv);
+                        htmlContent += tempContainer.innerHTML;
+                    }
+                    
+                    // 显示 AI 最终答案（支持 markdown）
+                    if (data.answer) {
+                        const answerDiv = document.createElement('div');
+                        answerDiv.className = 'bg-green-50 rounded-lg shadow-md p-6 mb-6';
+                        
+                        const titleH2 = document.createElement('h2');
+                        titleH2.className = 'text-xl font-semibold mb-2 text-green-600';
+                        titleH2.textContent = 'AI 回答';
+                        
+                        const contentDiv = document.createElement('div');
+                        contentDiv.className = 'text-gray-700 prose';
+                        // 用 marked 解析 markdown
+                        contentDiv.innerHTML = marked.parse(data.answer || '');
+                        
+                        answerDiv.appendChild(titleH2);
+                        answerDiv.appendChild(contentDiv);
+                        
+                        const tempContainer = document.createElement('div');
+                        tempContainer.appendChild(answerDiv);
+                        htmlContent += tempContainer.innerHTML;
+                    }
+
+                    // 显示相关文档
+                    if (data.results && data.results.length > 0) {
+                        const docsDiv = document.createElement('div');
+                        docsDiv.className = 'bg-white rounded-lg shadow-md p-6';
+                        
+                        const titleH2 = document.createElement('h2');
+                        titleH2.className = 'text-xl font-semibold mb-4 text-gray-800';
+                        titleH2.textContent = '参考文档';
+                        docsDiv.appendChild(titleH2);
+                        
+                        data.results.forEach(result => {
+                            const resultDiv = document.createElement('div');
+                            resultDiv.className = 'mb-4 last:mb-0 p-4 bg-gray-50 rounded';
+                            
+                            const textDiv = document.createElement('div');
+                            textDiv.className = 'text-gray-600';
+                            textDiv.textContent = result.text;
+                            
+                            const scoreDiv = document.createElement('div');
+                            scoreDiv.className = 'mt-2 text-sm text-gray-500';
+                            scoreDiv.textContent = `相关度: ${Math.round(result.score * 100)}%`;
+                            
+                            resultDiv.appendChild(textDiv);
+                            resultDiv.appendChild(scoreDiv);
+                            docsDiv.appendChild(resultDiv);
+                        });
+                        
+                        const tempContainer = document.createElement('div');
+                        tempContainer.appendChild(docsDiv);
+                        htmlContent += tempContainer.innerHTML;
+                    }
+                    
+                    results.innerHTML = htmlContent;
+                } else {
+                    results.innerHTML = `<div class="text-red-500 p-4 bg-red-50 rounded-lg">${data.error}</div>`;
+                }
+            } catch (error) {
+                results.innerHTML = `<div class="text-red-500 p-4 bg-red-50 rounded-lg">搜索出错: ${error.message}</div>`;
+            } finally {
+                loading.classList.add('hidden');
+            }
+        }
+    </script>
+</body>
+</html> 
