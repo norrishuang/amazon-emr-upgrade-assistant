@@ -3,399 +3,604 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OpenSearch RAG 多轮对话应用</title>
-    <link href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <link rel="preload" href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css" as="style">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>Amazon EMR 升级助手</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css/github-markdown.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.7.2/font/bootstrap-icons.css">
     <style>
-        /* 基础样式 */
         body {
-            background-color: #f3f4f6;
-            margin: 0;
-            padding: 0;
-            font-family: system-ui, -apple-system, sans-serif;
+            background-color: #f8f9fa;
         }
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 1rem;
+        .main-container {
+            display: flex;
+            height: 100vh;
+            padding: 20px;
+            gap: 20px;
         }
-        textarea, button, input {
-            font-family: inherit;
+        .sessions-panel {
+            width: 300px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
         }
-        .hidden {
+        .chat-container {
+            flex: 1;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+        .message {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: 20%;
+        }
+        .bot-message {
+            background-color: #f5f5f5;
+            margin-right: 20%;
+        }
+        .thinking {
+            font-style: italic;
+            color: #666;
+            margin-bottom: 10px;
+            cursor: pointer;
+            user-select: none;
+        }
+        .thinking-content {
             display: none;
+            padding: 10px;
+            background-color: #fff3cd;
+            border-radius: 5px;
+            margin-top: 5px;
+            font-size: 0.9em;
         }
-        /* 思考过程折叠区域样式 */
-        .thinking-details summary {
-            list-style: none;
-            position: relative;
-            padding-left: 1.5rem;
+        .thinking-content.show {
+            display: block;
         }
-        .thinking-details summary::-webkit-details-marker {
-            display: none;
-        }
-        .thinking-details summary::before {
-            content: '▶';
-            position: absolute;
-            left: 0;
-            transform: translateY(-2px);
+        .thinking-toggle {
+            display: inline-block;
+            margin-right: 5px;
             transition: transform 0.2s;
         }
-        .thinking-details[open] summary::before {
-            transform: rotate(90deg) translateX(-2px);
+        .thinking-toggle.expanded {
+            transform: rotate(90deg);
         }
-        /* 对话气泡样式 */
-        .chat-bubble {
-            border-radius: 1rem;
-            padding: 1rem;
-            margin-bottom: 1rem;
-            max-width: 80%;
+        .input-group {
+            margin-top: auto;
         }
-        .user-bubble {
-            background-color: #e9f5ff;
-            margin-left: auto;
-            border-top-right-radius: 0.25rem;
-        }
-        .ai-bubble {
-            background-color: #f0f0f0;
-            margin-right: auto;
-            border-top-left-radius: 0.25rem;
-        }
-        /* AI气泡中的思考过程样式 */
-        .ai-bubble .thinking-details summary {
-            list-style: none;
-            position: relative;
-            padding-left: 1.5rem;
-        }
-        .ai-bubble .thinking-details summary::-webkit-details-marker {
+        .session-info {
+            margin-bottom: 20px;
+            padding: 10px;
+            background-color: #e8f5e9;
+            border-radius: 5px;
             display: none;
         }
-        .ai-bubble .thinking-details summary::before {
-            content: '▶';
-            position: absolute;
-            left: 0;
-            transform: translateY(-2px);
-            transition: transform 0.2s;
+        .markdown-body {
+            background-color: transparent;
+            font-size: 0.9em;
         }
-        .ai-bubble .thinking-details[open] summary::before {
-            transform: rotate(90deg) translateX(-2px);
+        .markdown-body pre {
+            background-color: #f6f8fa;
+            padding: 10px;
+            border-radius: 5px;
         }
-        /* 滚动区域样式 */
-        .chat-history {
-            height: calc(100vh - 280px);
-            overflow-y: auto;
-            padding-right: 0.5rem;
-        }
-        .chat-history::-webkit-scrollbar {
-            width: 6px;
-        }
-        .chat-history::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-        .chat-history::-webkit-scrollbar-thumb {
-            background: #c1c1c1;
+        .markdown-body code {
+            background-color: #f6f8fa;
+            padding: 2px 4px;
             border-radius: 3px;
         }
-        .chat-history::-webkit-scrollbar-thumb:hover {
-            background: #a1a1a1;
+        .sessions-list {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 10px;
+        }
+        .session-item {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 5px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .session-item:hover {
+            background-color: #f8f9fa;
+        }
+        .session-item.active {
+            background-color: #e3f2fd;
+        }
+        .session-item .delete-btn {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        .session-item:hover .delete-btn {
+            opacity: 1;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            margin-bottom: 20px;
+        }
+        .add-session-btn {
+            width: 100%;
+            margin-top: 10px;
+        }
+        
+        /* 加载动画样式 */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .loading-content {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            text-align: center;
+        }
+        
+        .loading-spinner {
+            width: 3rem;
+            height: 3rem;
+        }
+        
+        .loading-text {
+            margin-top: 10px;
+            color: #666;
+        }
+        
+        .header-logo {
+            max-height: 40px;
+            margin-right: 10px;
+        }
+        
+        .header-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+        
+        .llm-powered {
+            font-size: 0.8em;
+            color: #666;
+            text-align: center;
+            margin-top: 5px;
+        }
+        
+        .search-results {
+            margin-top: 10px;
+            border-top: 1px solid #eee;
+            padding-top: 10px;
+        }
+        
+        .search-results-header {
+            cursor: pointer;
+            user-select: none;
+            display: flex;
+            align-items: center;
+            color: #666;
+            font-size: 0.9em;
+        }
+        
+        .search-results-toggle {
+            display: inline-block;
+            margin-right: 5px;
+            transition: transform 0.2s;
+        }
+        
+        .search-results-toggle.expanded {
+            transform: rotate(90deg);
+        }
+        
+        .search-results-content {
+            display: none;
+            margin-top: 10px;
+        }
+        
+        .search-results-content.show {
+            display: block;
+        }
+        
+        .search-result-item {
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            padding: 10px;
+            margin-bottom: 10px;
+            font-size: 0.9em;
+        }
+        
+        .search-result-score {
+            color: #666;
+            font-size: 0.8em;
+            margin-top: 5px;
         }
     </style>
 </head>
-<body class="bg-gray-100 min-h-screen">
-    <div class="container mx-auto px-4 py-4">
-        <h1 class="text-2xl font-bold text-center mb-6 text-gray-800">OpenSearch RAG 多轮对话应用</h1>
-        
-        <div class="flex flex-col md:flex-row gap-6">
-            <!-- 左侧对话历史区域 -->
-            <div class="w-full md:w-1/2 bg-white rounded-lg shadow-md p-4 flex flex-col">
-                <h2 class="text-xl font-semibold mb-3 text-gray-800">对话历史</h2>
-                <div id="chatHistory" class="chat-history mb-4">
-                    <!-- 对话历史将在这里动态显示 -->
-                </div>
-                
-                <div class="mt-auto">
-                    <textarea 
-                        id="searchInput" 
-                        class="w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                        rows="3"
-                        placeholder="请输入您的问题..."
-                    ></textarea>
-                    <div class="flex justify-between mt-3">
-                        <button onclick="clearChat()" 
-                                class="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500">
-                            清空对话
-                        </button>
-                        <button onclick="search()" 
-                                class="px-6 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            发送
-                        </button>
-                    </div>
-                </div>
+<body>
+    <!-- 添加加载动画 -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-content">
+            <div class="spinner-border loading-spinner text-primary" role="status">
+                <span class="visually-hidden">加载中...</span>
             </div>
-            
-            <!-- 右侧内容区域 -->
-            <div class="w-full md:w-1/2 flex flex-col gap-6">
-                <!-- 文件上传部分 -->
-                <div class="bg-white rounded-lg shadow-md p-4">
-                    <h2 class="text-xl font-semibold mb-3 text-gray-800">上传文档</h2>
-                    <div class="flex flex-col gap-3">
-                        <div class="flex items-center gap-3">
-                            <input type="file" 
-                                   id="fileInput" 
-                                   class="hidden" 
-                                   accept=".txt,.pdf,.doc,.docx">
-                            <button onclick="document.getElementById('fileInput').click()" 
-                                    class="px-3 py-1 bg-gray-500 text-white rounded-lg hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500">
-                                选择文件
-                            </button>
-                            <span id="fileName" class="text-gray-600 text-sm">未选择文件</span>
-                        </div>
-                        <div class="flex justify-between">
-                            <button onclick="uploadFile()" 
-                                    id="uploadButton"
-                                    class="px-4 py-1 bg-green-500 text-white rounded-lg hover:bg-green-600 focus:outline-none focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    disabled>
-                                上传文档
-                            </button>
-                            <div id="uploadStatus" class="text-sm"></div>
-                        </div>
-                    </div>
-                </div>
+            <div class="loading-text">正在思考中，请稍候...</div>
+        </div>
+    </div>
 
-                <!-- 当前回答区域 -->
-                <div id="currentAnswer" class="bg-white rounded-lg shadow-md p-4 flex-grow">
-                    <h2 class="text-xl font-semibold mb-3 text-gray-800">当前回答</h2>
-                    <div id="thinking" class="hidden">
-                        <details class="thinking-details mb-4">
-                            <summary class="text-lg font-medium text-yellow-800 cursor-pointer hover:text-yellow-600">
-                                AI 思考过程 (点击展开/折叠)
-                            </summary>
-                            <div id="thinkingContent" class="text-gray-700 whitespace-pre-wrap prose mt-3 pl-2 border-l-2 border-yellow-300">
-                            </div>
-                        </details>
-                    </div>
-                    
-                    <div id="answer" class="hidden">
-                        <h3 class="text-lg font-medium mb-2 text-green-600">AI 回答</h3>
-                        <div id="answerContent" class="text-gray-700 prose mb-4"></div>
-                    </div>
-                    
-                    <div id="references">
-                        <h3 class="text-lg font-medium mb-2 text-gray-800">参考文档</h3>
-                        <div id="referencesContent" class="text-gray-500 text-left">
-                            尚无参考文档
-                        </div>
-                    </div>
-                </div>
+    <div class="main-container">
+        <!-- 左侧会话面板 -->
+        <div class="sessions-panel">
+            <h3 class="mb-3">会话列表</h3>
+            <div class="sessions-list" id="sessionsList">
+                <!-- 会话列表将在这里动态显示 -->
             </div>
+            <button class="btn btn-primary add-session-btn" id="createSessionBtn">
+                <i class="bi bi-plus-lg"></i> 新建会话
+            </button>
         </div>
 
-        <div id="loading" class="hidden fixed inset-0 bg-black bg-opacity-30 flex items-center justify-center z-50">
-            <div class="bg-white p-6 rounded-lg shadow-xl flex flex-col items-center">
-                <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
-                <p class="mt-4 text-gray-700">处理中，请稍候...</p>
+        <!-- 右侧聊天区域 -->
+        <div class="chat-container">
+            <div class="header-container">
+                <img src="{{ url_for('static', filename='emr-logo.jpeg') }}" alt="EMR Logo" class="header-logo">
+                <h2 class="mb-0">Amazon EMR 升级助手</h2>
+            </div>
+            <div class="llm-powered">LLM powered by DeepSeek</div>
+            
+            <div class="session-info" id="sessionInfo">
+                <p class="mb-0">当前会话ID: <span id="currentSessionId"></span></p>
+            </div>
+
+            <div class="chat-messages" id="chatMessages"></div>
+
+            <div class="input-group">
+                <input type="text" id="userInput" class="form-control" placeholder="请输入您的问题..." disabled>
+                <button class="btn btn-primary" id="sendBtn" disabled>发送</button>
             </div>
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script>
-        // 存储对话历史
-        let chatMessages = [];
-        
-        // 将函数定义移到全局作用域
-        async function uploadFile() {
-            const fileInput = document.getElementById('fileInput');
-            const uploadStatus = document.getElementById('uploadStatus');
-            const uploadButton = document.getElementById('uploadButton');
+        let currentSessionId = null;
+        let sessions = new Map(); // 存储所有会话
+        const chatMessages = document.getElementById('chatMessages');
+        const userInput = document.getElementById('userInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const createSessionBtn = document.getElementById('createSessionBtn');
+        const sessionInfo = document.getElementById('sessionInfo');
+        const currentSessionIdSpan = document.getElementById('currentSessionId');
+        const sessionsList = document.getElementById('sessionsList');
+
+        // 配置 marked 选项
+        marked.setOptions({
+            breaks: true,
+            gfm: true
+        });
+
+        function createSessionElement(sessionId) {
+            const sessionDiv = document.createElement('div');
+            sessionDiv.className = 'session-item';
+            sessionDiv.dataset.sessionId = sessionId;
             
-            if (!fileInput.files.length) return;
+            const sessionTitle = document.createElement('span');
+            sessionTitle.textContent = `会话 ${sessions.size}`;
             
-            const formData = new FormData();
-            formData.append('file', fileInput.files[0]);
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'btn btn-sm btn-outline-danger delete-btn';
+            deleteBtn.innerHTML = '<i class="bi bi-trash"></i>';
             
-            uploadButton.disabled = true;
-            uploadStatus.innerHTML = '<div class="text-blue-500">文档上传处理中...</div>';
+            sessionDiv.appendChild(sessionTitle);
+            sessionDiv.appendChild(deleteBtn);
             
-            try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData
-                });
-                
-                const data = await response.json();
-                
-                if (data.success) {
-                    uploadStatus.innerHTML = `<div class="text-green-500">${data.message}</div>`;
-                    fileInput.value = '';
-                    document.getElementById('fileName').textContent = '未选择文件';
-                } else {
-                    uploadStatus.innerHTML = `<div class="text-red-500">上传失败: ${data.error}</div>`;
+            // 添加点击事件
+            sessionDiv.addEventListener('click', (e) => {
+                if (e.target !== deleteBtn && !deleteBtn.contains(e.target)) {
+                    switchSession(sessionId);
                 }
-            } catch (error) {
-                uploadStatus.innerHTML = `<div class="text-red-500">上传出错: ${error.message}</div>`;
-            } finally {
-                uploadButton.disabled = false;
+            });
+            
+            // 添加删除事件
+            deleteBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                deleteSession(sessionId);
+            });
+            
+            return sessionDiv;
+        }
+
+        function switchSession(sessionId) {
+            if (currentSessionId === sessionId) return;
+            
+            // 更新当前会话
+            currentSessionId = sessionId;
+            currentSessionIdSpan.textContent = sessionId;
+            
+            // 更新UI状态
+            document.querySelectorAll('.session-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.sessionId === sessionId);
+            });
+            
+            // 启用输入
+            userInput.disabled = false;
+            sendBtn.disabled = false;
+            
+            // 显示会话信息
+            sessionInfo.style.display = 'block';
+            
+            // 清空聊天记录
+            chatMessages.innerHTML = '';
+            
+            // 如果有历史消息，显示它们
+            const session = sessions.get(sessionId);
+            if (session && session.messages) {
+                session.messages.forEach(msg => {
+                    addMessage(msg.sender, msg.text, msg.type, msg.searchResults);
+                });
             }
         }
 
-        async function search() {
-            const query = document.getElementById('searchInput').value;
-            if (!query.trim()) return;
+        async function deleteSession(sessionId) {
+            if (!confirm('确定要删除这个会话吗？')) return;
+            
+            try {
+                const response = await fetch('/delete_session', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        memory_id: sessionId
+                    })
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    // 从会话列表中移除
+                    sessions.delete(sessionId);
+                    const sessionElement = document.querySelector(`.session-item[data-session-id="${sessionId}"]`);
+                    if (sessionElement) {
+                        sessionElement.remove();
+                    }
+                    
+                    // 如果删除的是当前会话，清空聊天区域
+                    if (currentSessionId === sessionId) {
+                        currentSessionId = null;
+                        sessionInfo.style.display = 'none';
+                        chatMessages.innerHTML = '';
+                        userInput.disabled = true;
+                        sendBtn.disabled = true;
+                    }
+                } else {
+                    alert('删除会话失败：' + data.error);
+                }
+            } catch (error) {
+                alert('删除会话时发生错误：' + error);
+            }
+        }
 
-            const loading = document.getElementById('loading');
+        createSessionBtn.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/create_session', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                if (data.success) {
+                    const sessionId = data.memory_id;
+                    
+                    // 创建新会话
+                    sessions.set(sessionId, {
+                        messages: []
+                    });
+                    
+                    // 添加到会话列表
+                    const sessionElement = createSessionElement(sessionId);
+                    sessionsList.appendChild(sessionElement);
+                    
+                    // 切换到新会话
+                    switchSession(sessionId);
+                    
+                    // 添加欢迎消息
+                    addMessage('系统', '新会话已创建，您可以开始提问了。', 'bot');
+                } else {
+                    alert('创建会话失败：' + data.error);
+                }
+            } catch (error) {
+                alert('创建会话时发生错误：' + error);
+            }
+        });
+
+        function addMessage(sender, text, type, searchResults = null) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
             
-            // 添加用户消息到对话历史
-            addMessageToChat('user', query);
+            if (type === 'bot' && text.includes('思考过程：')) {
+                const parts = text.split('思考过程：');
+                const answer = parts[0].trim();
+                const thinking = parts[1].trim();
+
+                // 创建思考过程部分
+                const thinkingDiv = document.createElement('div');
+                thinkingDiv.className = 'thinking';
+                
+                const toggle = document.createElement('span');
+                toggle.className = 'thinking-toggle';
+                toggle.textContent = '▶';
+                
+                const thinkingHeader = document.createElement('span');
+                thinkingHeader.textContent = 'AI 思考过程';
+                
+                const thinkingContent = document.createElement('div');
+                thinkingContent.className = 'thinking-content';
+                thinkingContent.textContent = thinking;
+                
+                thinkingDiv.appendChild(toggle);
+                thinkingDiv.appendChild(thinkingHeader);
+                thinkingDiv.appendChild(thinkingContent);
+                
+                // 添加点击事件
+                thinkingDiv.addEventListener('click', () => {
+                    thinkingContent.classList.toggle('show');
+                    toggle.classList.toggle('expanded');
+                });
+                
+                messageDiv.appendChild(thinkingDiv);
+                
+                // 创建回答部分
+                const answerDiv = document.createElement('div');
+                answerDiv.className = 'markdown-body';
+                answerDiv.innerHTML = marked.parse(answer);
+                messageDiv.appendChild(answerDiv);
+
+                // 添加搜索结果部分
+                if (searchResults && searchResults.length > 0) {
+                    const resultsDiv = document.createElement('div');
+                    resultsDiv.className = 'search-results';
+                    
+                    const resultsHeader = document.createElement('div');
+                    resultsHeader.className = 'search-results-header';
+                    
+                    const resultsToggle = document.createElement('span');
+                    resultsToggle.className = 'search-results-toggle';
+                    resultsToggle.textContent = '▶';
+                    
+                    const resultsTitle = document.createElement('span');
+                    resultsTitle.textContent = `参考文档 (${searchResults.length})`;
+                    
+                    resultsHeader.appendChild(resultsToggle);
+                    resultsHeader.appendChild(resultsTitle);
+                    
+                    const resultsContent = document.createElement('div');
+                    resultsContent.className = 'search-results-content';
+                    
+                    searchResults.forEach(result => {
+                        const resultItem = document.createElement('div');
+                        resultItem.className = 'search-result-item';
+                        resultItem.textContent = result.text;
+                        
+                        const scoreDiv = document.createElement('div');
+                        scoreDiv.className = 'search-result-score';
+                        scoreDiv.textContent = `相关度: ${Math.round(result.score * 100)}%`;
+                        
+                        resultItem.appendChild(scoreDiv);
+                        resultsContent.appendChild(resultItem);
+                    });
+                    
+                    resultsDiv.appendChild(resultsHeader);
+                    resultsDiv.appendChild(resultsContent);
+                    
+                    // 添加点击事件
+                    resultsHeader.addEventListener('click', () => {
+                        resultsContent.classList.toggle('show');
+                        resultsToggle.classList.toggle('expanded');
+                    });
+                    
+                    messageDiv.appendChild(resultsDiv);
+                }
+            } else {
+                if (type === 'bot') {
+                    const answerDiv = document.createElement('div');
+                    answerDiv.className = 'markdown-body';
+                    answerDiv.innerHTML = marked.parse(text);
+                    messageDiv.appendChild(answerDiv);
+                } else {
+                    messageDiv.textContent = text;
+                }
+            }
             
-            // 清空输入框
-            document.getElementById('searchInput').value = '';
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
             
-            // 显示加载状态
-            loading.classList.remove('hidden');
+            // 保存消息到当前会话
+            if (currentSessionId) {
+                const session = sessions.get(currentSessionId);
+                if (session) {
+                    session.messages.push({
+                        sender,
+                        text,
+                        type,
+                        searchResults
+                    });
+                }
+            }
+        }
+
+        function showLoading() {
+            document.getElementById('loadingOverlay').style.display = 'flex';
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingOverlay').style.display = 'none';
+        }
+
+        async function sendMessage() {
+            const message = userInput.value.trim();
+            if (!message || !currentSessionId) return;
+
+            addMessage('用户', message, 'user');
+            userInput.value = '';
+            
+            // 显示加载动画
+            showLoading();
 
             try {
                 const response = await fetch('/search', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json',
-                        'Accept': 'application/json; charset=utf-8'
+                        'Content-Type': 'application/json'
                     },
-                    body: JSON.stringify({ query })
+                    body: JSON.stringify({
+                        query: message,
+                        memory_id: currentSessionId
+                    })
                 });
 
                 const data = await response.json();
-                
-                // 确保正确解析中文字符
                 if (data.success) {
-                    // 构建AI回答，包含可折叠的思考过程
-                    let aiResponse = data.answer;
-                    
-                    // 如果有思考过程，添加可折叠的思考部分
+                    let botResponse = data.answer;
                     if (data.thinking) {
-                        aiResponse = `
-                            <details class="thinking-details mb-2">
-                                <summary class="text-sm font-medium text-yellow-800 cursor-pointer hover:text-yellow-600">
-                                    查看AI思考过程
-                                </summary>
-                                <div class="text-gray-700 whitespace-pre-wrap text-sm mt-2 pl-2 border-l-2 border-yellow-300">
-                                    ${data.thinking}
-                                </div>
-                            </details>
-                            <div>${data.answer}</div>
-                        `;
+                        botResponse = botResponse + '\n思考过程：' + data.thinking;
                     }
-                    
-                    // 添加AI回答到对话历史
-                    addMessageToChat('ai', aiResponse);
-                    
-                    // 更新右侧当前回答区域
-                    updateCurrentAnswer(data);
+                    addMessage('助手', botResponse, 'bot', data.results);
                 } else {
-                    // 添加错误消息到对话历史
-                    addMessageToChat('ai', `抱歉，处理您的问题时出错: ${data.error}`);
+                    addMessage('系统', '发生错误：' + data.error, 'bot');
                 }
             } catch (error) {
-                addMessageToChat('ai', `抱歉，请求失败: ${error.message}`);
+                addMessage('系统', '发送消息时发生错误：' + error, 'bot');
             } finally {
-                loading.classList.add('hidden');
+                // 隐藏加载动画
+                hideLoading();
             }
-        }
-        
-        function addMessageToChat(role, content) {
-            // 添加消息到内存中的对话历史
-            chatMessages.push({ role, content });
-            
-            // 创建新的消息元素
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `chat-bubble ${role === 'user' ? 'user-bubble' : 'ai-bubble'}`;
-            
-            // 如果是AI回答，检查是否有思考过程
-            if (role === 'ai') {
-                messageDiv.innerHTML = content;
-            } else {
-                messageDiv.textContent = content;
-            }
-            
-            // 添加到聊天历史区域
-            const chatHistory = document.getElementById('chatHistory');
-            chatHistory.appendChild(messageDiv);
-            
-            // 滚动到底部
-            chatHistory.scrollTop = chatHistory.scrollHeight;
-        }
-        
-        function updateCurrentAnswer(data) {
-            // 更新思考过程
-            const thinking = document.getElementById('thinking');
-            const thinkingContent = document.getElementById('thinkingContent');
-            
-            if (data.thinking) {
-                thinking.classList.remove('hidden');
-                thinkingContent.textContent = data.thinking;
-            } else {
-                thinking.classList.add('hidden');
-            }
-            
-            // 更新回答
-            const answer = document.getElementById('answer');
-            const answerContent = document.getElementById('answerContent');
-            
-            if (data.answer) {
-                answer.classList.remove('hidden');
-                answerContent.textContent = data.answer;
-            } else {
-                answer.classList.add('hidden');
-            }
-            
-            // 更新参考文档
-            const referencesContent = document.getElementById('referencesContent');
-            
-            if (data.results && data.results.length > 0) {
-                let referencesHtml = '';
-                
-                data.results.forEach(result => {
-                    referencesHtml += `
-                        <div class="mb-3 p-3 bg-gray-50 rounded">
-                            <div class="text-gray-600">${result.text}</div>
-                            <div class="mt-1 text-xs text-gray-500">相关度: ${Math.round(result.score * 100)}%</div>
-                        </div>
-                    `;
-                });
-                
-                referencesContent.innerHTML = referencesHtml;
-            } else {
-                referencesContent.innerHTML = '<div class="text-gray-500 text-left">未找到相关参考文档</div>';
-            }
-        }
-        
-        function clearChat() {
-            // 清空对话历史
-            chatMessages = [];
-            document.getElementById('chatHistory').innerHTML = '';
-            
-            // 清空当前回答区域
-            document.getElementById('thinking').classList.add('hidden');
-            document.getElementById('answer').classList.add('hidden');
-            document.getElementById('referencesContent').innerHTML = '<div class="text-gray-500 text-left">尚无参考文档</div>';
         }
 
-        // DOM 加载完成后的初始化代码
-        document.addEventListener('DOMContentLoaded', function() {
-            // 文件上传相关的事件监听
-            document.getElementById('fileInput').addEventListener('change', function(e) {
-                const fileName = e.target.files[0]?.name || '未选择文件';
-                document.getElementById('fileName').textContent = fileName;
-                document.getElementById('uploadButton').disabled = !e.target.files.length;
-            });
-
-            // 添加回车键搜索功能
-            document.getElementById('searchInput').addEventListener('keypress', function(e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault(); // 阻止默认的换行行为
-                    search();
-                }
-            });
+        sendBtn.addEventListener('click', sendMessage);
+        userInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
         });
     </script>
 </body>
