@@ -62,6 +62,7 @@ def create_session():
 def search():
     query = request.json.get('query', '')
     memory_id = request.json.get('memory_id', '')
+    pipeline = request.json.get('pipeline', 'my-conversation-search-pipeline-deepseek-zh')
     
     if not memory_id:
         return custom_jsonify({
@@ -69,15 +70,28 @@ def search():
             'error': '未提供会话ID'
         }), 400
     
-    # 构建 OpenSearch 查询，使用传入的 memory_id
+    # 构建基础查询
     search_query = {
         "query": {
-            "neural": {
-                "embedding": {
-                    "query_text": query,
-                    "model_id": os.getenv('OPENSEARCH_EMBEDDING_MODEL_ID', '-kB2sZUB0LCOh9zdNaiU'),
-                    "k": 5
-                }
+            "hybrid": {
+                "queries": [
+                    {
+                        "neural": {
+                            "embedding": {
+                                "query_text": query,
+                                "model_id": os.getenv('OPENSEARCH_EMBEDDING_MODEL_ID', '-kB2sZUB0LCOh9zdNaiU'),
+                                "k": 5
+                            }
+                        }
+                    },
+                    {
+                        "match": {
+                            "text": {
+                                "query": query
+                            }
+                        }
+                    }
+                ]
             }
         },
         "size": 5,
@@ -91,17 +105,25 @@ def search():
                 "context_size": 5,
                 "timeout": 100,
                 "memory_id": memory_id,
-                "message_size": 2
+                "message_size": 3
             }
         }
     }
+    
+    # 如果是重排序管道，添加重排序参数
+    if pipeline == 'conversation_and_rerank_pipeline_bedrock':
+        search_query["ext"]["rerank"] = {
+            "query_context": {
+                "query_text": query
+            }
+        }
     
     try:
         # 执行搜索
         response = client.search(
             body=search_query,
             index=os.getenv('OPENSEARCH_INDEX', 'opensearch_kl_index'),
-            params={'search_pipeline': 'my-conversation-search-pipeline-deepseek-zh'}
+            params={'search_pipeline': pipeline}
         )
         
         # 处理搜索结果

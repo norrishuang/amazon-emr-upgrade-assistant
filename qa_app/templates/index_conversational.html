@@ -20,8 +20,8 @@
         .sessions-panel {
             width: 300px;
             background: white;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
             padding: 20px;
             display: flex;
             flex-direction: column;
@@ -29,24 +29,27 @@
         .chat-container {
             flex: 1;
             background: white;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            border-radius: 16px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
             padding: 20px;
             display: flex;
             flex-direction: column;
         }
         .message {
             margin-bottom: 15px;
-            padding: 10px;
-            border-radius: 5px;
+            padding: 12px 16px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .user-message {
             background-color: #e3f2fd;
             margin-left: 20%;
+            border-bottom-right-radius: 4px;
         }
         .bot-message {
             background-color: #f5f5f5;
             margin-right: 20%;
+            border-bottom-left-radius: 4px;
         }
         .thinking {
             font-style: italic;
@@ -54,21 +57,58 @@
             margin-bottom: 10px;
             cursor: pointer;
             user-select: none;
+            padding: 8px 12px;
+            border-radius: 8px;
+            background-color: #fff3cd;
+            transition: background-color 0.2s;
+        }
+        .thinking:hover {
+            background-color: #ffe69c;
         }
         .thinking-content {
             display: none;
-            padding: 10px;
+            padding: 12px;
             background-color: #fff3cd;
-            border-radius: 5px;
-            margin-top: 5px;
+            border-radius: 8px;
+            margin-top: 8px;
             font-size: 0.9em;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        .thinking-content .markdown-body {
+            background-color: transparent;
+            font-size: 0.95em;
+            line-height: 1.6;
+        }
+        .thinking-content .markdown-body pre {
+            background-color: #f6f8fa;
+            padding: 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin: 8px 0;
+        }
+        .thinking-content .markdown-body code {
+            background-color: #f6f8fa;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .thinking-content .markdown-body p {
+            margin-bottom: 8px;
+        }
+        .thinking-content .markdown-body ul, 
+        .thinking-content .markdown-body ol {
+            margin-bottom: 8px;
+            padding-left: 20px;
+        }
+        .thinking-content .markdown-body li {
+            margin-bottom: 4px;
         }
         .thinking-content.show {
             display: block;
         }
         .thinking-toggle {
             display: inline-block;
-            margin-right: 5px;
+            margin-right: 8px;
             transition: transform 0.2s;
         }
         .thinking-toggle.expanded {
@@ -77,50 +117,83 @@
         .input-group {
             margin-top: auto;
         }
+        .input-group .form-control {
+            border-radius: 12px 0 0 12px;
+            border: 1px solid #dee2e6;
+            padding: 12px 16px;
+            font-size: 1rem;
+        }
+        .input-group .btn {
+            border-radius: 0 12px 12px 0;
+            padding: 12px 24px;
+            font-weight: 500;
+        }
         .session-info {
             margin-bottom: 20px;
-            padding: 10px;
+            padding: 12px 16px;
             background-color: #e8f5e9;
-            border-radius: 5px;
+            border-radius: 12px;
             display: none;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .markdown-body {
             background-color: transparent;
-            font-size: 0.9em;
+            font-size: 0.95em;
+            line-height: 1.6;
         }
         .markdown-body pre {
             background-color: #f6f8fa;
-            padding: 10px;
-            border-radius: 5px;
+            padding: 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
         }
         .markdown-body code {
             background-color: #f6f8fa;
-            padding: 2px 4px;
-            border-radius: 3px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.9em;
         }
         .sessions-list {
             flex: 1;
             overflow-y: auto;
             margin-bottom: 10px;
+            padding-right: 8px;
         }
         .session-item {
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 5px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            margin-bottom: 8px;
             cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+        .session-item-header {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            width: 100%;
+        }
+        .session-item-id {
+            font-size: 0.75em;
+            color: #6c757d;
+            margin-top: 4px;
+            word-break: break-all;
         }
         .session-item:hover {
             background-color: #f8f9fa;
+            border-color: #dee2e6;
         }
         .session-item.active {
             background-color: #e3f2fd;
+            border-color: #90caf9;
         }
         .session-item .delete-btn {
             opacity: 0;
-            transition: opacity 0.2s;
+            transition: all 0.2s;
+            border-radius: 8px;
+            padding: 4px 8px;
         }
         .session-item:hover .delete-btn {
             opacity: 1;
@@ -129,67 +202,67 @@
             flex: 1;
             overflow-y: auto;
             margin-bottom: 20px;
+            padding-right: 8px;
         }
         .add-session-btn {
             width: 100%;
             margin-top: 10px;
+            border-radius: 12px;
+            padding: 12px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+        .add-session-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         
-        /* 加载动画样式 */
-        .loading-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.8);
-            display: none;
-            justify-content: center;
-            align-items: center;
-            z-index: 1000;
+        .pipeline-selector {
+            background-color: #f8f9fa;
+            padding: 10px 12px;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            margin-bottom: 12px;
         }
-        
-        .loading-content {
-            background: white;
-            padding: 20px;
-            border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-            text-align: center;
+        .pipeline-selector .form-label {
+            font-weight: 500;
+            color: #495057;
+            margin-bottom: 8px;
+            font-size: 0.85em;
         }
-        
-        .loading-spinner {
-            width: 3rem;
-            height: 3rem;
-        }
-        
-        .loading-text {
-            margin-top: 10px;
-            color: #666;
-        }
-        
-        .header-logo {
-            max-height: 40px;
-            margin-right: 10px;
-        }
-        
-        .header-container {
+        .pipeline-options {
             display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-bottom: 20px;
+            flex-direction: column;
+            gap: 8px;
         }
-        
-        .llm-powered {
-            font-size: 0.8em;
-            color: #666;
-            text-align: center;
-            margin-top: 5px;
+        .form-check-inline {
+            margin-right: 0;
+            margin-bottom: 0;
+        }
+        .form-check-input {
+            cursor: pointer;
+            width: 16px;
+            height: 16px;
+            margin-top: 0.2em;
+        }
+        .form-check-input:checked {
+            background-color: #0d6efd;
+            border-color: #0d6efd;
+        }
+        .form-check-label {
+            cursor: pointer;
+            font-size: 0.85em;
+            color: #495057;
+            padding-left: 4px;
+        }
+        .form-check-input:focus {
+            box-shadow: 0 0 0 0.2rem rgba(13, 110, 253, 0.25);
         }
         
         .search-results {
-            margin-top: 10px;
+            margin-top: 12px;
             border-top: 1px solid #eee;
-            padding-top: 10px;
+            padding-top: 12px;
         }
         
         .search-results-header {
@@ -199,11 +272,17 @@
             align-items: center;
             color: #666;
             font-size: 0.9em;
+            padding: 8px 12px;
+            border-radius: 8px;
+            transition: background-color 0.2s;
+        }
+        .search-results-header:hover {
+            background-color: #f8f9fa;
         }
         
         .search-results-toggle {
             display: inline-block;
-            margin-right: 5px;
+            margin-right: 8px;
             transition: transform 0.2s;
         }
         
@@ -213,7 +292,7 @@
         
         .search-results-content {
             display: none;
-            margin-top: 10px;
+            margin-top: 12px;
         }
         
         .search-results-content.show {
@@ -222,16 +301,80 @@
         
         .search-result-item {
             background-color: #f8f9fa;
-            border-radius: 5px;
-            padding: 10px;
-            margin-bottom: 10px;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
             font-size: 0.9em;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            transition: all 0.2s;
+        }
+        .search-result-item:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         
         .search-result-score {
             color: #666;
-            font-size: 0.8em;
-            margin-top: 5px;
+            font-size: 0.85em;
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid #eee;
+        }
+        
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.9);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            backdrop-filter: blur(4px);
+        }
+        
+        .loading-content {
+            background: white;
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+            text-align: center;
+        }
+        
+        .loading-spinner {
+            width: 3rem;
+            height: 3rem;
+        }
+        
+        .loading-text {
+            margin-top: 12px;
+            color: #666;
+            font-weight: 500;
+        }
+        
+        .header-logo {
+            max-height: 40px;
+            margin-right: 12px;
+        }
+        
+        .header-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+            padding: 16px;
+            background-color: #f8f9fa;
+            border-radius: 12px;
+        }
+        
+        .llm-powered {
+            font-size: 0.85em;
+            color: #666;
+            text-align: center;
+            margin-top: 8px;
+            font-weight: 500;
         }
     </style>
 </head>
@@ -253,6 +396,19 @@
             <div class="sessions-list" id="sessionsList">
                 <!-- 会话列表将在这里动态显示 -->
             </div>
+            <div class="pipeline-selector mt-3">
+                <label class="form-label">选择搜索模式：</label>
+                <div class="pipeline-options">
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="pipelineSelect" id="pipelineDefault" value="my-conversation-search-pipeline-deepseek-zh" checked>
+                        <label class="form-check-label" for="pipelineDefault">默认模式</label>
+                    </div>
+                    <div class="form-check form-check-inline">
+                        <input class="form-check-input" type="radio" name="pipelineSelect" id="pipelineRerank" value="conversation_and_rerank_pipeline_bedrock">
+                        <label class="form-check-label" for="pipelineRerank">重排序模式(Rerank)</label>
+                    </div>
+                </div>
+            </div>
             <button class="btn btn-primary add-session-btn" id="createSessionBtn">
                 <i class="bi bi-plus-lg"></i> 新建会话
             </button>
@@ -266,10 +422,6 @@
             </div>
             <div class="llm-powered">LLM powered by DeepSeek</div>
             
-            <div class="session-info" id="sessionInfo">
-                <p class="mb-0">当前会话ID: <span id="currentSessionId"></span></p>
-            </div>
-
             <div class="chat-messages" id="chatMessages"></div>
 
             <div class="input-group">
@@ -287,8 +439,6 @@
         const userInput = document.getElementById('userInput');
         const sendBtn = document.getElementById('sendBtn');
         const createSessionBtn = document.getElementById('createSessionBtn');
-        const sessionInfo = document.getElementById('sessionInfo');
-        const currentSessionIdSpan = document.getElementById('currentSessionId');
         const sessionsList = document.getElementById('sessionsList');
 
         // 配置 marked 选项
@@ -302,6 +452,9 @@
             sessionDiv.className = 'session-item';
             sessionDiv.dataset.sessionId = sessionId;
             
+            const sessionHeader = document.createElement('div');
+            sessionHeader.className = 'session-item-header';
+            
             const sessionTitle = document.createElement('span');
             sessionTitle.textContent = `会话 ${sessions.size}`;
             
@@ -309,8 +462,14 @@
             deleteBtn.className = 'btn btn-sm btn-outline-danger delete-btn';
             deleteBtn.innerHTML = '<i class="bi bi-trash"></i>';
             
-            sessionDiv.appendChild(sessionTitle);
-            sessionDiv.appendChild(deleteBtn);
+            const sessionIdDiv = document.createElement('div');
+            sessionIdDiv.className = 'session-item-id';
+            sessionIdDiv.textContent = `ID: ${sessionId}`;
+            
+            sessionHeader.appendChild(sessionTitle);
+            sessionHeader.appendChild(deleteBtn);
+            sessionDiv.appendChild(sessionHeader);
+            sessionDiv.appendChild(sessionIdDiv);
             
             // 添加点击事件
             sessionDiv.addEventListener('click', (e) => {
@@ -333,7 +492,6 @@
             
             // 更新当前会话
             currentSessionId = sessionId;
-            currentSessionIdSpan.textContent = sessionId;
             
             // 更新UI状态
             document.querySelectorAll('.session-item').forEach(item => {
@@ -344,19 +502,124 @@
             userInput.disabled = false;
             sendBtn.disabled = false;
             
-            // 显示会话信息
-            sessionInfo.style.display = 'block';
-            
-            // 清空聊天记录
+            // 完全清空聊天记录
             chatMessages.innerHTML = '';
             
-            // 如果有历史消息，显示它们
-            const session = sessions.get(sessionId);
-            if (session && session.messages) {
-                session.messages.forEach(msg => {
-                    addMessage(msg.sender, msg.text, msg.type, msg.searchResults);
-                });
+            // 获取会话数据
+            let session = sessions.get(sessionId);
+            if (!session) {
+                // 如果会话不存在，创建新会话
+                session = { messages: [] };
+                sessions.set(sessionId, session);
+            } else if (!Array.isArray(session.messages)) {
+                // 如果消息不是数组，重置为空数组
+                session.messages = [];
             }
+            
+            // 显示历史消息
+            session.messages.forEach(msg => {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${msg.type}-message`;
+                
+                if (msg.type === 'bot' && msg.text.includes('思考过程：')) {
+                    const parts = msg.text.split('思考过程：');
+                    const answer = parts[0].trim();
+                    const thinking = parts[1].trim();
+
+                    // 创建思考过程部分
+                    const thinkingDiv = document.createElement('div');
+                    thinkingDiv.className = 'thinking';
+                    
+                    const toggle = document.createElement('span');
+                    toggle.className = 'thinking-toggle';
+                    toggle.textContent = '▶';
+                    
+                    const thinkingHeader = document.createElement('span');
+                    thinkingHeader.textContent = 'AI 思考过程';
+                    
+                    const thinkingContent = document.createElement('div');
+                    thinkingContent.className = 'thinking-content';
+                    thinkingContent.innerHTML = marked.parse(thinking);
+                    
+                    thinkingDiv.appendChild(toggle);
+                    thinkingDiv.appendChild(thinkingHeader);
+                    thinkingDiv.appendChild(thinkingContent);
+                    
+                    // 添加点击事件
+                    thinkingDiv.addEventListener('click', () => {
+                        thinkingContent.classList.toggle('show');
+                        toggle.classList.toggle('expanded');
+                    });
+                    
+                    messageDiv.appendChild(thinkingDiv);
+                    
+                    // 创建回答部分
+                    const answerDiv = document.createElement('div');
+                    answerDiv.className = 'markdown-body';
+                    answerDiv.innerHTML = marked.parse(answer);
+                    messageDiv.appendChild(answerDiv);
+
+                    // 添加搜索结果部分
+                    if (msg.searchResults && msg.searchResults.length > 0) {
+                        const resultsDiv = document.createElement('div');
+                        resultsDiv.className = 'search-results';
+                        
+                        const resultsHeader = document.createElement('div');
+                        resultsHeader.className = 'search-results-header';
+                        
+                        const resultsToggle = document.createElement('span');
+                        resultsToggle.className = 'search-results-toggle';
+                        resultsToggle.textContent = '▶';
+                        
+                        const resultsTitle = document.createElement('span');
+                        resultsTitle.textContent = `参考文档 (${msg.searchResults.length})`;
+                        
+                        resultsHeader.appendChild(resultsToggle);
+                        resultsHeader.appendChild(resultsTitle);
+                        
+                        const resultsContent = document.createElement('div');
+                        resultsContent.className = 'search-results-content';
+                        
+                        msg.searchResults.forEach(result => {
+                            const resultItem = document.createElement('div');
+                            resultItem.className = 'search-result-item';
+                            resultItem.textContent = result.text;
+                            
+                            const scoreDiv = document.createElement('div');
+                            scoreDiv.className = 'search-result-score';
+                            scoreDiv.textContent = `相关度: ${Math.round(result.score * 100)}%`;
+                            
+                            resultItem.appendChild(scoreDiv);
+                            resultsContent.appendChild(resultItem);
+                        });
+                        
+                        resultsDiv.appendChild(resultsHeader);
+                        resultsDiv.appendChild(resultsContent);
+                        
+                        // 添加点击事件
+                        resultsHeader.addEventListener('click', () => {
+                            resultsContent.classList.toggle('show');
+                            resultsToggle.classList.toggle('expanded');
+                        });
+                        
+                        messageDiv.appendChild(resultsDiv);
+                    }
+                } else {
+                    if (msg.type === 'bot') {
+                        const answerDiv = document.createElement('div');
+                        answerDiv.className = 'markdown-body';
+                        answerDiv.innerHTML = marked.parse(msg.text);
+                        messageDiv.appendChild(answerDiv);
+                    } else {
+                        messageDiv.textContent = msg.text;
+                    }
+                }
+                
+                chatMessages.appendChild(messageDiv);
+            });
+            
+            // 滚动到底部
+            chatMessages.scrollTop = chatMessages.scrollHeight;
         }
 
         async function deleteSession(sessionId) {
@@ -385,7 +648,6 @@
                     // 如果删除的是当前会话，清空聊天区域
                     if (currentSessionId === sessionId) {
                         currentSessionId = null;
-                        sessionInfo.style.display = 'none';
                         chatMessages.innerHTML = '';
                         userInput.disabled = true;
                         sendBtn.disabled = true;
@@ -455,7 +717,7 @@
                 
                 const thinkingContent = document.createElement('div');
                 thinkingContent.className = 'thinking-content';
-                thinkingContent.textContent = thinking;
+                thinkingContent.innerHTML = marked.parse(thinking);
                 
                 thinkingDiv.appendChild(toggle);
                 thinkingDiv.appendChild(thinkingHeader);
@@ -538,6 +800,9 @@
             if (currentSessionId) {
                 const session = sessions.get(currentSessionId);
                 if (session) {
+                    if (!Array.isArray(session.messages)) {
+                        session.messages = [];
+                    }
                     session.messages.push({
                         sender,
                         text,
@@ -574,7 +839,8 @@
                     },
                     body: JSON.stringify({
                         query: message,
-                        memory_id: currentSessionId
+                        memory_id: currentSessionId,
+                        pipeline: document.querySelector('input[name="pipelineSelect"]:checked').value
                     })
                 });
 
