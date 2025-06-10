@@ -1,10 +1,11 @@
-from flask import Flask, render_template, request, jsonify, send_from_directory
+from flask import Flask, render_template, request, jsonify, send_from_directory, session, redirect, url_for
 from opensearchpy import OpenSearch, RequestsHttpConnection
 import os
 from dotenv import load_dotenv
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 import json as json_module
+import secrets
 
 load_dotenv()
 
@@ -30,8 +31,61 @@ client = OpenSearch(
     timeout=120
 )
 
+# 存储邀请码的字典，格式为 {invite_code: expiry_time}
+invite_codes = {}
+
+# 生成邀请码的函数
+def generate_invite_code(expiry_hours=24):
+    code = secrets.token_urlsafe(16)
+    expiry_time = datetime.now() + timedelta(hours=expiry_hours)
+    invite_codes[code] = expiry_time
+    return code
+
+# 验证邀请码的函数
+def verify_invite_code(code):
+    if code not in invite_codes:
+        return False
+    if datetime.now() > invite_codes[code]:
+        del invite_codes[code]
+        return False
+    return True
+
+# 清理过期邀请码的函数
+def cleanup_expired_codes():
+    current_time = datetime.now()
+    expired_codes = [code for code, expiry in invite_codes.items() if current_time > expiry]
+    for code in expired_codes:
+        del invite_codes[code]
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        return render_template('login.html')
+    
+    data = request.get_json()
+    invite_code = data.get('inviteCode')
+    
+    if not invite_code:
+        return custom_jsonify({
+            'success': False,
+            'error': '请输入邀请码'
+        })
+    
+    if verify_invite_code(invite_code):
+        session['authenticated'] = True
+        return custom_jsonify({
+            'success': True
+        })
+    else:
+        return custom_jsonify({
+            'success': False,
+            'error': '邀请码无效或已过期'
+        })
+
 @app.route('/')
 def index():
+    if not session.get('authenticated'):
+        return redirect(url_for('login'))
     return render_template('index_conversational.html')
 
 @app.route('/create_session', methods=['POST'])
@@ -209,5 +263,20 @@ def serve_static(filename):
     response.headers['Cache-Control'] = 'public, max-age=3600'
     return response
 
+# 添加生成邀请码的路由（仅用于测试）
+@app.route('/generate_invite_code', methods=['POST'])
+def generate_code():
+    code = generate_invite_code()
+    return custom_jsonify({
+        'success': True,
+        'code': code,
+        'expires': invite_codes[code].isoformat()
+    })
+
 if __name__ == '__main__':
+    # 生成一个测试用的邀请码
+    test_code = generate_invite_code()
+    print(f"测试邀请码: {test_code}")
+    print(f"过期时间: {invite_codes[test_code]}")
+    
     app.run(debug=True, port=5001)
