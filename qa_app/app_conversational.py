@@ -323,4 +323,4 @@ if __name__ == '__main__':
     print(f"测试邀请码: {test_code}")
     print(f"过期时间: {invite_codes[test_code]}")
     
-    app.run(debug=True, port=5001)
+    app.run(host='0.0.0.0', port=5001, debug=False)
