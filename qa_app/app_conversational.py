@@ -43,6 +43,7 @@ def get_secret(secret_name, region_name='us-east-1'):
 # 应用配置
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'opensearch-rag-demo-secret-key')
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(hours=24)  # 设置session过期时间
 
 # 从 Secrets Manager 获取 OpenSearch 认证信息
 try:
@@ -92,6 +93,10 @@ def cleanup_expired_codes():
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    # 如果已经登录，重定向到主页
+    if session.get('authenticated'):
+        return redirect(url_for('index'))
+        
     if request.method == 'GET':
         return render_template('login.html')
     
@@ -105,6 +110,7 @@ def login():
         })
     
     if verify_invite_code(invite_code):
+        session.permanent = True  # 设置session为永久性
         session['authenticated'] = True
         return custom_jsonify({
             'success': True
@@ -120,6 +126,11 @@ def index():
     if not session.get('authenticated'):
         return redirect(url_for('login'))
     return render_template('index_conversational.html')
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 
 @app.route('/create_session', methods=['POST'])
 def create_session():

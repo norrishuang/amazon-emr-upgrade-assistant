@@ -26,10 +26,18 @@
             align-items: center;
             justify-content: center;
             margin-bottom: 24px;
+            flex-wrap: nowrap;
+            gap: 12px;
         }
         .header-logo {
             max-height: 40px;
-            margin-right: 12px;
+            flex-shrink: 0;
+        }
+        .header-title {
+            font-size: 1.5rem;
+            margin: 0;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
         .form-control {
             border-radius: 12px;
@@ -55,7 +63,7 @@
     <div class="login-container">
         <div class="header-container">
             <img src="{{ url_for('static', filename='emr-logo.jpeg') }}" alt="EMR Logo" class="header-logo">
-            <h2 class="mb-0">Amazon EMR 升级助手</h2>
+            <h2 class="header-title">Amazon EMR 升级助手</h2>
         </div>
         
         <form id="loginForm" method="POST" action="{{ url_for('login') }}">
