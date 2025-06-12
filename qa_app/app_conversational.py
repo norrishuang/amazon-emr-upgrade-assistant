@@ -8,8 +8,47 @@ import json as json_module
 import secrets
 import boto3
 from botocore.exceptions import ClientError
+import logging
+from logging.handlers import RotatingFileHandler
+import sys
 
 load_dotenv()
+
+# 创建日志目录
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# 配置日志记录器
+def setup_logger():
+    logger = logging.getLogger('emr_assistant')
+    logger.setLevel(logging.INFO)
+    
+    # 创建格式化器
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # 创建文件处理器（带滚动）
+    file_handler = RotatingFileHandler(
+        filename=os.path.join(log_dir, 'emr_assistant.log'),
+        maxBytes=100*1024*1024,  # 100MB
+        backupCount=30,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    return logger
+
+# 初始化日志记录器
+logger = setup_logger()
 
 # 自定义JSON编码函数，确保中文字符不被转义
 def custom_jsonify(data):
@@ -27,17 +66,19 @@ def get_secret(secret_name, region_name='us-east-1'):
         service_name='secretsmanager',
         region_name=region_name
     )
-    print(f"secret_name: {secret_name}")
+    logger.info(f"正在获取密钥: {secret_name}")
     try:
         get_secret_value_response = client.get_secret_value(
             SecretId=secret_name
         )
     except ClientError as e:
+        logger.error(f"获取密钥失败: {str(e)}")
         raise e
     else:
         if 'SecretString' in get_secret_value_response:
             return json.loads(get_secret_value_response['SecretString'])
         else:
+            logger.error("密钥值不是字符串类型")
             raise ValueError("Secret value is not a string")
 
 # 应用配置
@@ -61,8 +102,9 @@ try:
         connection_class=RequestsHttpConnection,
         timeout=120
     )
+    logger.info("OpenSearch 客户端初始化成功")
 except Exception as e:
-    print(f"Error initializing OpenSearch client: {str(e)}")
+    logger.error(f"OpenSearch 客户端初始化失败: {str(e)}")
     raise
 
 # 存储邀请码的字典，格式为 {invite_code: expiry_time}
@@ -73,15 +115,19 @@ def generate_invite_code(expiry_hours=24):
     code = secrets.token_urlsafe(16)
     expiry_time = datetime.now() + timedelta(hours=expiry_hours)
     invite_codes[code] = expiry_time
+    logger.info(f"生成新邀请码: {code}, 过期时间: {expiry_time}")
     return code
 
 # 验证邀请码的函数
 def verify_invite_code(code):
     if code not in invite_codes:
+        logger.warning(f"无效的邀请码尝试: {code}")
         return False
     if datetime.now() > invite_codes[code]:
+        logger.info(f"邀请码已过期: {code}")
         del invite_codes[code]
         return False
+    logger.info(f"邀请码验证成功: {code}")
     return True
 
 # 清理过期邀请码的函数
@@ -90,20 +136,25 @@ def cleanup_expired_codes():
     expired_codes = [code for code, expiry in invite_codes.items() if current_time > expiry]
     for code in expired_codes:
         del invite_codes[code]
+    if expired_codes:
+        logger.info(f"清理过期邀请码: {len(expired_codes)} 个")
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     # 如果已经登录，重定向到主页
     if session.get('authenticated'):
+        logger.info("用户已登录，重定向到主页")
         return redirect(url_for('index'))
         
     if request.method == 'GET':
+        logger.info("访问登录页面")
         return render_template('login.html')
     
     data = request.get_json()
     invite_code = data.get('inviteCode')
     
     if not invite_code:
+        logger.warning("登录尝试：未提供邀请码")
         return custom_jsonify({
             'success': False,
             'error': '请输入邀请码'
@@ -112,10 +163,12 @@ def login():
     if verify_invite_code(invite_code):
         session.permanent = True  # 设置session为永久性
         session['authenticated'] = True
+        logger.info(f"用户登录成功，邀请码: {invite_code}")
         return custom_jsonify({
             'success': True
         })
     else:
+        logger.warning(f"登录失败：无效的邀请码: {invite_code}")
         return custom_jsonify({
             'success': False,
             'error': '邀请码无效或已过期'
@@ -124,17 +177,21 @@ def login():
 @app.route('/')
 def index():
     if not session.get('authenticated'):
+        logger.info("未登录用户尝试访问主页，重定向到登录页")
         return redirect(url_for('login'))
+    logger.info("用户访问主页")
     return render_template('index_conversational.html')
 
 @app.route('/logout')
 def logout():
+    logger.info("用户登出")
     session.clear()
     return redirect(url_for('login'))
 
 @app.route('/create_session', methods=['POST'])
 def create_session():
     try:
+        logger.info("创建新会话")
         # 调用 OpenSearch 创建新的 memory
         response = client.transport.perform_request(
             method='POST',
@@ -144,13 +201,16 @@ def create_session():
         
         memory_id = response.get('memory_id')
         if not memory_id:
+            logger.error("创建会话失败：未获取到 memory_id")
             raise ValueError("创建会话失败：未获取到 memory_id")
             
+        logger.info(f"会话创建成功: {memory_id}")
         return custom_jsonify({
             'success': True,
             'memory_id': memory_id
         })
     except Exception as e:
+        logger.error(f"创建会话失败: {str(e)}")
         return custom_jsonify({
             'success': False,
             'error': str(e)
@@ -162,7 +222,10 @@ def search():
     memory_id = request.json.get('memory_id', '')
     pipeline = request.json.get('pipeline', 'my-conversation-search-pipeline-deepseek-zh')
     
+    logger.info(f"收到搜索请求 - 查询: {query}, 会话ID: {memory_id}, 管道: {pipeline}")
+    
     if not memory_id:
+        logger.warning("搜索请求：未提供会话ID")
         return custom_jsonify({
             'success': False,
             'error': '未提供会话ID'
@@ -218,6 +281,7 @@ def search():
     
     try:
         # 执行搜索
+        logger.info(f"执行搜索 - 管道: {pipeline}")
         response = client.search(
             body=search_query,
             index=os.getenv('OPENSEARCH_INDEX', 'opensearch_kl_index'),
@@ -253,6 +317,7 @@ def search():
         else:
             answer = answer.replace('\n\n', '\n').strip()
             
+        logger.info(f"搜索成功 - 找到 {len(results)} 个结果")
         return custom_jsonify({
             'success': True,
             'results': results,
@@ -261,6 +326,7 @@ def search():
         })
         
     except Exception as e:
+        logger.error(f"搜索失败: {str(e)}")
         return custom_jsonify({
             'success': False,
             'error': str(e)
@@ -271,23 +337,27 @@ def delete_session():
     memory_id = request.json.get('memory_id', '')
     
     if not memory_id:
+        logger.warning("删除会话请求：未提供会话ID")
         return custom_jsonify({
             'success': False,
             'error': '未提供会话ID'
         }), 400
     
     try:
+        logger.info(f"删除会话: {memory_id}")
         # 调用 OpenSearch 删除 memory
         response = client.transport.perform_request(
             method='DELETE',
             url=f'/_plugins/_ml/memory/{memory_id}'
         )
         
+        logger.info(f"会话删除成功: {memory_id}")
         return custom_jsonify({
             'success': True,
             'message': '会话已删除'
         })
     except Exception as e:
+        logger.error(f"删除会话失败: {str(e)}")
         return custom_jsonify({
             'success': False,
             'error': str(e)
@@ -311,6 +381,7 @@ def serve_static(filename):
 @app.route('/generate_invite_code', methods=['POST'])
 def generate_code():
     code = generate_invite_code()
+    logger.info(f"生成新邀请码: {code}")
     return custom_jsonify({
         'success': True,
         'code': code,
@@ -320,7 +391,7 @@ def generate_code():
 if __name__ == '__main__':
     # 生成一个测试用的邀请码
     test_code = generate_invite_code()
-    print(f"测试邀请码: {test_code}")
-    print(f"过期时间: {invite_codes[test_code]}")
+    logger.info(f"应用启动 - 测试邀请码: {test_code}")
+    logger.info(f"应用启动 - 过期时间: {invite_codes[test_code]}")
     
     app.run(host='0.0.0.0', port=5001, debug=False)

@@ -1,0 +1,762 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for OpenSearch ML Connector with DeepSeek and Titan Embedding models'
+
+Parameters:
+  OpenSearchDomainName:
+    Type: String
+    Description: Name of the OpenSearch domain
+    Default: deepseek-demo
+  
+  OpenSearchDomainEndpoint:
+    Type: String
+    Description: Full endpoint URL for the OpenSearch domain (e.g., https://search-domain.region.es.amazonaws.com.cn)
+    
+  OpenSearchAdminUsername:
+    Type: String
+    Description: Username for OpenSearch admin
+    Default: admin
+  
+  OpenSearchAdminPassword:
+    Type: String
+    Description: Password for OpenSearch admin
+    NoEcho: true
+  
+  LLMModelId:
+    Type: String
+    Description: ID of the DeepSeek LLM model in Amazon Bedrock
+    Default: us.deepseek.r1-v1:0
+  
+  Region:
+    Type: String
+    Description: AWS Region
+    Default: us-east-1
+    
+  DependenciesS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda layer dependencies zip file
+    
+  DependenciesS3Key:
+    Type: String
+    Description: S3 key for the Lambda layer dependencies zip file
+
+Resources:
+  # Add a Lambda execution role policy for PassRole
+  LambdaPassRolePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy to allow Lambda to pass roles
+      ManagedPolicyName: !Sub "lambda-pass-role-policy-${AWS::StackName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:PassRole
+            Resource: 
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/invoke-deepseek-role-*'
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/create-deepseek-connector-role-*'
+
+  InvokeDeepSeekPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy to allow invoking Bedrock models for DeepSeek and Titan embedding
+      ManagedPolicyName: !Sub "invoke-deepseek-policy-${AWS::StackName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource:
+              - !Sub 'arn:aws:bedrock:${Region}::foundation-model/${LLMModelId}'
+              - !Sub 'arn:aws:bedrock:${Region}::foundation-model/amazon.titan-embed-text-v2:0'
+
+  InvokeDeepSeekRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "invoke-deepseek-role-${AWS::StackName}"
+      Description: Role for OpenSearch to invoke Bedrock models
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - es.amazonaws.com
+                - aoss.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref InvokeDeepSeekPolicy
+
+  # 2. IAM Role for creating ML connectors in OpenSearch
+  CreateDeepSeekConnectorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy to allow creating ML connectors in OpenSearch
+      ManagedPolicyName: !Sub "create-deepseek-connector-policy-${AWS::StackName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt InvokeDeepSeekRole.Arn
+          - Effect: Allow
+            Action: es:ESHttpPost
+            Resource: !Sub 'arn:aws:es:${Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}'
+
+  CreateDeepSeekConnectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "create-deepseek-connector-role-${AWS::StackName}"
+      Description: Role for creating ML connectors in OpenSearch
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+                - es.amazonaws.com
+                - aoss.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref CreateDeepSeekConnectorPolicy
+
+  # 3. Lambda function to configure OpenSearch security and create ML connectors
+  OpenSearchConfigurationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "opensearch-config-lambda-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - !Ref LambdaPassRolePolicy
+      Policies:
+        - PolicyName: OpenSearchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - es:ESHttpGet
+                  - es:ESHttpPost
+                  - es:ESHttpPut
+                Resource: !Sub 'arn:aws:es:${Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+        - PolicyName: STSAssumeRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: "*"
+        - PolicyName: IAMPassRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: 
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/invoke-deepseek-role-${AWS::StackName}'
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/create-deepseek-connector-role-${AWS::StackName}'
+                  - !GetAtt InvokeDeepSeekRole.Arn
+
+  # Add a resource-based policy to allow PassRole to the InvokeDeepSeekRole
+  InvokeDeepSeekRolePolicy:
+    Type: AWS::IAM::Policy
+    DependsOn: 
+      - OpenSearchConfigurationLambdaRole
+      - InvokeDeepSeekRole
+    Properties:
+      PolicyName: !Sub "invoke-deepseek-role-policy-${AWS::StackName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: 
+              - iam:PassRole
+              - iam:GetRole
+            Resource: 
+              - !GetAtt InvokeDeepSeekRole.Arn
+              - !Sub 'arn:aws:iam::${AWS::AccountId}:role/invoke-deepseek-role-${AWS::StackName}'
+      Roles:
+        - !Ref OpenSearchConfigurationLambdaRole
+
+  # Lambda Layer for Python dependencies
+  PythonDependenciesLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: !Ref DependenciesS3Bucket
+        S3Key: !Ref DependenciesS3Key
+      Description: Layer containing Python dependencies for OpenSearch ML Connector
+      LayerName: !Sub "opensearch-ml-connector-deps-${AWS::StackName}"
+
+  OpenSearchConfigurationLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - OpenSearchConfigurationLambdaRole
+      - InvokeDeepSeekRole
+      - CreateDeepSeekConnectorRole
+      - InvokeDeepSeekRolePolicy
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-OpenSearchConfig"
+      Handler: index.handler
+      Role: !GetAtt OpenSearchConfigurationLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 300
+      Layers:
+        - !Ref PythonDependenciesLayer
+      Environment:
+        Variables:
+          OPENSEARCH_DOMAIN_ENDPOINT: !Ref OpenSearchDomainEndpoint
+          OPENSEARCH_ADMIN_USER: !Ref OpenSearchAdminUsername
+          OPENSEARCH_ADMIN_PASSWORD: !Ref OpenSearchAdminPassword
+          REGION: !Ref Region
+          BEDROCK_REGION: !Ref Region
+          INVOKE_DEEPSEEK_ROLE_ARN: !GetAtt InvokeDeepSeekRole.Arn
+          CREATE_DEEPSEEK_CONNECTOR_ROLE_ARN: !GetAtt CreateDeepSeekConnectorRole.Arn
+          LLM_MODEL_ID: !Ref LLMModelId
+          ACCOUNT_ID: !Ref AWS::AccountId
+          AWS_CLOUDFORMATION_STACK_NAME: !Ref AWS::StackName
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import requests
+          from requests_aws4auth import AWS4Auth
+          import time
+          import urllib3
+          import logging
+          
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          # 内联 cfnresponse 模块
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          http = urllib3.PoolManager()
+          
+          def send_cfn_response(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False, reason=None):
+              responseUrl = event['ResponseURL']
+              logger.info(f"CFN response URL: {responseUrl}")
+              
+              responseBody = {
+                  'Status': responseStatus,
+                  'Reason': reason or "See the details in CloudWatch Log Stream: {}".format(context.log_stream_name),
+                  'PhysicalResourceId': physicalResourceId or context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'NoEcho': noEcho,
+                  'Data': responseData
+              }
+              
+              json_responseBody = json.dumps(responseBody)
+              logger.info(f"Response body: {json_responseBody}")
+              
+              headers = {
+                  'content-type': '',
+                  'content-length': str(len(json_responseBody))
+              }
+              
+              try:
+                  response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                  logger.info(f"Status code: {response.status}")
+              except Exception as e:
+                  logger.error(f"send(..) failed executing http.request(..): {e}")
+
+          def handler(event, context):
+              # For CloudFormation custom resource
+              responseData = {}
+              
+              # Log the event for debugging
+              logger.info(f"Received event: {json.dumps(event)}")
+              
+              # Check if this is a CloudFormation delete event
+              if event.get('RequestType') == 'Delete':
+                  logger.info("Processing Delete request")
+                  send_cfn_response(event, context, SUCCESS, responseData)
+                  return
+              
+              try:
+                  # Get environment variables
+                  opensearch_endpoint = os.environ['OPENSEARCH_DOMAIN_ENDPOINT']
+                  admin_user = os.environ['OPENSEARCH_ADMIN_USER']
+                  admin_password = os.environ['OPENSEARCH_ADMIN_PASSWORD']
+                  region = os.environ['REGION']
+                  bedrock_region = os.environ['BEDROCK_REGION']
+                  invoke_role_arn = os.environ['INVOKE_DEEPSEEK_ROLE_ARN']
+                  create_connector_role_arn = os.environ['CREATE_DEEPSEEK_CONNECTOR_ROLE_ARN']
+                  llm_model_id = os.environ['LLM_MODEL_ID']
+                  account_id = os.environ['ACCOUNT_ID']
+                  
+                  logger.info(f"OpenSearch endpoint: {opensearch_endpoint}")
+                  logger.info(f"Region: {region}")
+                  logger.info(f"Bedrock Region: {bedrock_region}")
+                  logger.info(f"LLM model ID: {llm_model_id}")
+                  
+                  # Set up authentication
+                  userauth = (admin_user, admin_password)
+                  headers = {"Content-Type": "application/json"}
+                  
+                  # Disable SSL warnings - not recommended for production
+                  urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                  
+                  # 1. Configure OpenSearch security - Add role mapping
+                  logger.info("Configuring OpenSearch security - Adding role mapping")
+                  lambda_invoke_ml_commons_role_name = 'LambdaInvokeOpenSearchMLCommonsRole'
+                  lambda_invoke_ml_commons_role_arn = f'arn:aws:iam::{account_id}:role/{lambda_invoke_ml_commons_role_name}'
+                  
+                  # Add the Lambda execution role to the role mapping using a reliable method
+                  try:
+                      # Get the Lambda execution role using the Lambda API
+                      lambda_client = boto3.client('lambda')
+                      function_name = os.environ['AWS_LAMBDA_FUNCTION_NAME']
+                      response = lambda_client.get_function(FunctionName=function_name)
+                      lambda_role_arn = response['Configuration']['Role']
+                      lambda_execution_role = lambda_role_arn.split('/')[-1]
+                      logger.info(f"Lambda execution role name: {lambda_execution_role}")
+                      logger.info(f"Lambda execution role ARN: {lambda_role_arn}")
+                  except Exception as e:
+                      # Fallback method if the above fails
+                      logger.warning(f"Error getting Lambda role via API: {str(e)}")
+                      lambda_execution_role = os.environ.get('AWS_LAMBDA_FUNCTION_NAME', 'unknown') + '-role'
+                      lambda_role_arn = f"arn:aws:iam::{account_id}:role/{lambda_execution_role}"
+                      logger.info(f"Using fallback Lambda role: {lambda_role_arn}")
+                  
+                  role_mapping = {
+                      "backend_roles": [
+                          create_connector_role_arn,
+                          lambda_invoke_ml_commons_role_arn,
+                          lambda_role_arn,
+                          # Add the OpenSearch Configuration Lambda role explicitly
+                          f"arn:aws:iam::{account_id}:role/opensearch-config-lambda-role-{os.environ.get('AWS_CLOUDFORMATION_STACK_NAME', '')}"
+                      ]
+                  }
+                  
+                  try:
+                      response = requests.put(
+                          f"{opensearch_endpoint}/_plugins/_security/api/rolesmapping/all_access",
+                          auth=userauth,
+                          json=role_mapping,
+                          headers=headers,
+                          verify=False  # In production, use proper certificate verification
+                      )
+                      logger.info(f"Role mapping response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to configure role mapping: {response.text}")
+                  except Exception as e:
+                      logger.error(f"Error configuring role mapping: {str(e)}")
+                      raise e
+                  
+                  # 3. Create AWS4Auth for connector creation
+                  logger.info("Creating AWS4Auth for connector creation")
+                  try:
+                      # Use the Lambda's own credentials instead of assuming a role
+                      session = boto3.Session()
+                      credentials = session.get_credentials()
+
+                      awsauth = AWS4Auth(
+                          credentials.access_key,
+                          credentials.secret_key,
+                          region,
+                          'es',
+                          session_token=credentials.token
+                      )
+
+                      # Log the identity for debugging
+                      sts_client = boto3.client('sts')
+                      identity = sts_client.get_caller_identity()
+                      logger.info(f"Current identity: {json.dumps(identity)}")
+
+                      # Add explicit PassRole permission check
+                      try:
+                          iam_client = boto3.client('iam')
+                          logger.info(f"Checking PassRole permissions for role: {invoke_role_arn}")
+                          iam_client.get_role(RoleName=invoke_role_arn.split('/')[-1])
+                          logger.info("Successfully retrieved role information")
+                      except Exception as e:
+                          logger.error(f"Error checking role permissions: {str(e)}")
+                          logger.info("Continuing despite permission check error...")
+
+                  except Exception as e:
+                      logger.error(f"Error creating AWS4Auth: {str(e)}")
+                      raise e
+                  
+                  # 4. Create DeepSeek LLM Connector using ML Commons
+                  logger.info("Creating DeepSeek LLM Connector using ML Commons")
+                  
+                  # Create the connector directly without checking if it exists
+                  connector_payload = {
+                      "name": "deepseek-connector",
+                      "description": "Connector for DeepSeek model via Amazon Bedrock",
+                      "version": "1",
+                      "protocol": "aws_sigv4",
+                      "parameters": {
+                          "region": bedrock_region,
+                          "service_name": "bedrock",
+                          "action": "invoke-model",
+                          "model_id": llm_model_id,
+                          "content_type": "application/json",
+                          "request_body": "{\"prompt\": \"${parameters.prompt}\", \"max_tokens\": ${parameters.max_tokens}, \"temperature\": ${parameters.temperature}}",
+                          "response_body": "$.generation"
+                      },
+                      "credential": {
+                          "roleArn": invoke_role_arn
+                      },
+                      "actions": [
+                          {
+                              "action_type": "predict",
+                              "method": "POST",
+                              "url": f"https://bedrock-runtime.{bedrock_region}.amazonaws.com/model/${{parameters.model_id}}/invoke",
+                              "headers": {
+                                  "content-type": "${parameters.content_type}"
+                              },
+                              "request_body": "${parameters.request_body}",
+                              "pre_process_function": "connector.pre_process.bedrock",
+                              "post_process_function": "connector.post_process.bedrock"
+                          }
+                      ]
+                  }
+                  
+                  try:
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/connectors/_create",
+                          auth=awsauth,
+                          json=connector_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Create DeepSeek connector response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to Create DeepSeek connector: {response.text}")
+                      
+                      logger.info("Successfully registered DeepSeek connector")
+                      deepseek_connector_id = json.loads(response.text)['connector_id']
+                  except Exception as e:
+                      logger.error(f"Error creating DeepSeek connector: {str(e)}")
+                      # Continue even if there's an error, as the connector might already exist
+                      logger.info("Continuing with connector search...")
+                      
+                  try:
+                      # Create model from connector
+                      model_payload = {
+                          "name": "Bedrock DeepSeek R1 model",
+                          "function_name": "remote",
+                          "description": "DeepSeek LLM model via Amazon Bedrock",
+                          "connector_id": deepseek_connector_id
+                      }
+                      
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/models/_register",
+                          auth=awsauth,
+                          json=model_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Register DeepSeek model response: {response.status_code} - {response.text}")
+                    
+                      deepseek_model_id = response.json()['model_id']
+
+                      if not deepseek_model_id:
+                          raise Exception("Could not find DeepSeek model ID after registration")
+                      
+                      responseData['deepseekModelId'] = deepseek_model_id
+                      responseData['deepseekConnectorId'] = deepseek_connector_id
+                      logger.info(f"DeepSeek model ID: {deepseek_model_id}")
+                      logger.info(f"DeepSeek connector ID: {deepseek_connector_id}")
+          
+          
+                      # Deploy DeepSeek model
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/models/{deepseek_model_id}/_deploy",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"DeepSeek model deploy response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to deploy DeepSeek model: {response.text}")
+          
+          
+                  except Exception as e:
+                      logger.error(f"Error creating DeepSeek integration: {str(e)}")
+                      raise e
+                  
+                  # 5. Create Titan Embedding Connector using ML Commons
+                  logger.info("Creating Titan Embedding Connector using ML Commons")
+                  
+                  # Create the connector directly without checking if it exists
+                  connector_payload = {
+                      "name": "titan-embedding-connector",
+                      "description": "Connector for Titan Embedding model via Amazon Bedrock",
+                      "version": "1",
+                      "protocol": "aws_sigv4",
+                      "parameters": {
+                          "region": region,
+                          "service_name": "bedrock",
+                          "action": "invoke-model",
+                          "model_id": "amazon.titan-embed-text-v2:0",
+                          "content_type": "application/json",
+                          "request_body": "{\"inputText\": \"${parameters.text}\"}",
+                          "response_body": "$.embedding"
+                      },
+                      "credential": {
+                          "roleArn": invoke_role_arn
+                      },
+                      "actions": [
+                          {
+                              "action_type": "predict",
+                              "method": "POST",
+                              "url": f"https://bedrock-runtime.{region}.amazonaws.com/model/${{parameters.model_id}}/invoke",
+                              "headers": {
+                                  "content-type": "${parameters.content_type}"
+                              },
+                              "request_body": "${parameters.request_body}",
+                              "pre_process_function": "connector.pre_process.bedrock",
+                              "post_process_function": "connector.post_process.bedrock"
+                          }
+                      ]
+                  }
+                  
+                  try:
+                      # Create Titan embedding connector
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/connectors/_create",
+                          auth=awsauth,
+                          json=connector_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Register Titan embedding connector response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to register Titan embedding connector: {response.text}")
+                      
+                      logger.info("Successfully registered Titan embedding connector")
+                      
+                      embedding_connector_id = json.loads(response.text)['connector_id']
+                      
+                      if not embedding_connector_id:
+                          raise Exception("Could not find Titan embedding connector ID after registration")
+                      
+                      # Create model from connector
+                      model_payload = {
+                          "name": "titan-embedding-model",
+                          "function_name": "remote",
+                          "description": "Titan Embedding model via Amazon Bedrock",
+                          "connector_id": embedding_connector_id
+                      }
+                      
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/models/_register",
+                          auth=awsauth,
+                          json=model_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Register Titan embedding model response: {response.status_code} - {response.text}")
+                      
+                      embedding_model_id = response.json()['model_id']
+                      
+                      if not embedding_model_id:
+                          raise Exception("Could not find Titan embedding model ID after registration")
+                      
+                      responseData['embeddingModelId'] = embedding_model_id
+                      responseData['embeddingConnectorId'] = embedding_connector_id
+                      logger.info(f"Titan embedding model ID: {embedding_model_id}")
+                      logger.info(f"Titan embedding connector ID: {embedding_connector_id}")
+          
+                      
+          
+                      # Deploy Embedding model
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/models/{embedding_model_id}/_deploy",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Embedding model deploy response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to deploy Embedding model: {response.text}")
+          
+          
+                  except Exception as e:
+                      logger.error(f"Error creating Titan embedding integration: {str(e)}")
+                      raise e
+                  
+                  # 6. Register and deploy DeepSeek Model - Not needed anymore as it's handled by the integration
+                  # Directly proceed to importing knowledge base data
+                  
+                  # 7. Import Knowledge Base Data
+                  logger.info("Importing Knowledge Base Data")
+                  index_name = "emr_upgrade_hive"
+                  
+                  # Define the mapping for the index
+                  mapping = {
+                      "settings": {
+                          "index": {
+                              "knn": True,
+                              "number_of_shards": 1,
+                              "number_of_replicas": 1
+                          }
+                      },
+                      "mappings": {
+                          "properties": {
+                              "text": {"type": "text"},
+                              "text_embedding": {
+                                  "type": "knn_vector",
+                                  "dimension": 1024,  # Titan embedding v2 dimension is 1024
+                                  "method": {
+                                      "name": "hnsw",
+                                      "space_type": "l2",
+                                      "engine": "faiss",
+                                      "parameters": {"ef_construction": 128, "m": 24}
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  
+                  
+                  # 9. Create Search Pipeline
+                  logger.info("Creating Search Pipeline")
+                  search_pipeline_payload = {
+                              "response_processors": [
+                                {
+                                  "retrieval_augmented_generation": {
+                                    "tag": "Demo pipeline",
+                                    "description": "Demo pipeline Using DeepSeek R1",
+                                    "model_id": "SPOgIZcBnlXe1e0nU4po",
+                                    "context_field_list": [
+                                      "text"
+                                    ],
+                                    "system_prompt": "你是一个Amazon EMR版本升级助手.",
+                                    "user_instructions": "针对给定的问题，用少于 200 个字给出简洁、翔实的答案"
+                                  }
+                                }
+                              ],
+                              "phase_results_processors": [
+                                {
+                                  "normalization-processor": {
+                                    "normalization": {
+                                      "technique": "min_max"
+                                    },
+                                    "combination": {
+                                      "technique": "arithmetic_mean",
+                                      "parameters": {
+                                        "weights": [
+                                          0.6,
+                                          0.4
+                                        ]
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                          }
+                  
+                  try:
+                      response = requests.put(
+                          f"{opensearch_endpoint}/_search/pipeline/my-conversation-search-pipeline-deepseek-zh",
+                          auth=awsauth,
+                          json=search_pipeline_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Search pipeline response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to create Search pipeline: {response.text}")
+                  except Exception as e:
+                      logger.error(f"Error creating Search pipeline: {str(e)}")
+                      raise e
+                  
+                  logger.info("Sending success response to CloudFormation")
+                  send_cfn_response(event, context, SUCCESS, responseData)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'deepseekConnectorId': deepseek_connector_id,
+                          'embeddingConnectorId': embedding_connector_id,
+                          'deepseekModelId': deepseek_model_id,
+                          'embeddingModelId': embedding_model_id
+                      })
+                  }
+              except Exception as e:
+                  error_message = str(e)
+                  logger.error(f"Error: {error_message}")
+                  send_cfn_response(event, context, FAILED, {"Error": error_message})
+                  raise e
+
+  OpenSearchConfigurationCustomResource:
+    Type: Custom::OpenSearchConfiguration
+    DependsOn:
+      - InvokeDeepSeekRole
+      - CreateDeepSeekConnectorRole
+      - OpenSearchConfigurationLambda
+      - InvokeDeepSeekRolePolicy
+    Properties:
+      ServiceToken: !GetAtt OpenSearchConfigurationLambda.Arn
+      Region: !Ref Region
+
+Outputs:
+  InvokeDeepSeekRoleArn:
+    Description: ARN of the role used to invoke SageMaker endpoints
+    Value: !GetAtt InvokeDeepSeekRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-InvokeDeepSeekRoleArn"
+  
+  CreateDeepSeekConnectorRoleArn:
+    Description: ARN of the role used to create ML connectors in OpenSearch
+    Value: !GetAtt CreateDeepSeekConnectorRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-CreateDeepSeekConnectorRoleArn"
+  
+  OpenSearchConfigurationLambdaArn:
+    Description: ARN of the Lambda function that configures OpenSearch
+    Value: !GetAtt OpenSearchConfigurationLambda.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-OpenSearchConfigurationLambdaArn"
+  
+  DeepSeekConnectorId:
+    Description: ID of the DeepSeek Bedrock integration
+    Value: !GetAtt OpenSearchConfigurationCustomResource.deepseekConnectorId
+  
+  EmbeddingConnectorId:
+    Description: ID of the Titan Embedding integration
+    Value: !GetAtt OpenSearchConfigurationCustomResource.embeddingConnectorId
+  
+  DeepSeekModelId:
+    Description: ID of the DeepSeek Bedrock ML model
+    Value: !GetAtt OpenSearchConfigurationCustomResource.deepseekModelId
+  
+  EmbeddingModelId:
+    Description: ID of the Titan Embedding ML model
+    Value: !GetAtt OpenSearchConfigurationCustomResource.embeddingModelId
+  
+  SearchPipelineName:
+    Description: Name of the OpenSearch search pipeline created for RAG
+    Value: "my-conversation-search-pipeline-deepseek-zh"
+    Export:
+      Name: !Sub "${AWS::StackName}-SearchPipelineName"
