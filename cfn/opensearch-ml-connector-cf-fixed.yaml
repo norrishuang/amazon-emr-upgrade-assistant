@@ -986,3 +986,7 @@ Outputs:
   AppServerPublicDNS:
     Description: Public DNS name of the application server
     Value: !GetAtt AppServer.PublicDnsName
+    
+  ApplicationURL:
+    Description: URL to access the RAG application
+    Value: !Sub "http://${AppServer.PublicDnsName}:5001/"
