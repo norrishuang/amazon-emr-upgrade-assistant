@@ -11,15 +11,26 @@ Parameters:
     Type: String
     Description: Full endpoint URL for the OpenSearch domain (e.g., https://search-domain.region.es.amazonaws.com.cn)
     
-  OpenSearchAdminUsername:
+  OpenSearchCredentialsSecretName:
     Type: String
-    Description: Username for OpenSearch admin
-    Default: admin
-  
-  OpenSearchAdminPassword:
-    Type: String
-    Description: Password for OpenSearch admin
-    NoEcho: true
+    Description: Name of the Secrets Manager secret containing OpenSearch credentials
+    Default: opensearch_credentials
+    
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where the EC2 instance will be launched
+    
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet where the EC2 instance will be launched
+    
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group ID for the EC2 instance (leave empty to create a new one)
   
   LLMModelId:
     Type: String
@@ -38,6 +49,40 @@ Parameters:
   DependenciesS3Key:
     Type: String
     Description: S3 key for the Lambda layer dependencies zip file
+
+Conditions:
+  CreateSecurityGroup: !Equals [!Ref InstanceSecurityGroup, ""]
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-0e8a34246278c21e4  # Amazon Linux 2023 AMI
+    us-east-2:
+      AMI: ami-07a7a8c10c60f25be
+    us-west-1:
+      AMI: ami-0ce2cb35386fc22e9
+    us-west-2:
+      AMI: ami-05f9478b4deb8d173
+    ap-northeast-1:
+      AMI: ami-0f8048fa3e3b9e8ff
+    ap-northeast-2:
+      AMI: ami-0f3a440bbcff3d043
+    ap-southeast-1:
+      AMI: ami-0df7a207adb9748c7
+    ap-southeast-2:
+      AMI: ami-0310483fb2b488153
+    eu-central-1:
+      AMI: ami-0faab6bdbac9486fb
+    eu-west-1:
+      AMI: ami-0e309a5f3a6dd97ea
+    eu-west-2:
+      AMI: ami-0b1b3a0c66d750e27
+    sa-east-1:
+      AMI: ami-0a0b913ef3249633d
+    cn-north-1:
+      AMI: ami-0b4d5e4d0d9c7f79e
+    cn-northwest-1:
+      AMI: ami-0b4d5e4d0d9c7f79e
 
 Resources:
   # Add a Lambda execution role policy for PassRole
@@ -176,6 +221,24 @@ Resources:
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/invoke-deepseek-role-${AWS::StackName}'
                   - !Sub 'arn:aws:iam::${AWS::AccountId}:role/create-deepseek-connector-role-${AWS::StackName}'
                   - !GetAtt InvokeDeepSeekRole.Arn
+        - PolicyName: LambdaAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:GetFunction
+                Resource: !Sub 'arn:aws:lambda:${Region}:${AWS::AccountId}:function:${AWS::StackName}-OpenSearchConfig'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${OpenSearchCredentialsSecretName}*'
 
   # Add a resource-based policy to allow PassRole to the InvokeDeepSeekRole
   InvokeDeepSeekRolePolicy:
@@ -228,8 +291,7 @@ Resources:
       Environment:
         Variables:
           OPENSEARCH_DOMAIN_ENDPOINT: !Ref OpenSearchDomainEndpoint
-          OPENSEARCH_ADMIN_USER: !Ref OpenSearchAdminUsername
-          OPENSEARCH_ADMIN_PASSWORD: !Ref OpenSearchAdminPassword
+          OPENSEARCH_CREDENTIALS_SECRET_NAME: !Ref OpenSearchCredentialsSecretName
           REGION: !Ref Region
           BEDROCK_REGION: !Ref Region
           INVOKE_DEEPSEEK_ROLE_ARN: !GetAtt InvokeDeepSeekRole.Arn
@@ -302,19 +364,32 @@ Resources:
               try:
                   # Get environment variables
                   opensearch_endpoint = os.environ['OPENSEARCH_DOMAIN_ENDPOINT']
-                  admin_user = os.environ['OPENSEARCH_ADMIN_USER']
-                  admin_password = os.environ['OPENSEARCH_ADMIN_PASSWORD']
                   region = os.environ['REGION']
                   bedrock_region = os.environ['BEDROCK_REGION']
                   invoke_role_arn = os.environ['INVOKE_DEEPSEEK_ROLE_ARN']
                   create_connector_role_arn = os.environ['CREATE_DEEPSEEK_CONNECTOR_ROLE_ARN']
                   llm_model_id = os.environ['LLM_MODEL_ID']
                   account_id = os.environ['ACCOUNT_ID']
+                  secret_name = os.environ['OPENSEARCH_CREDENTIALS_SECRET_NAME']
                   
                   logger.info(f"OpenSearch endpoint: {opensearch_endpoint}")
                   logger.info(f"Region: {region}")
                   logger.info(f"Bedrock Region: {bedrock_region}")
                   logger.info(f"LLM model ID: {llm_model_id}")
+                  logger.info(f"Secret name: {secret_name}")
+                  
+                  # Get OpenSearch credentials from Secrets Manager
+                  logger.info("Getting OpenSearch credentials from Secrets Manager")
+                  secrets_client = boto3.client('secretsmanager', region_name=region)
+                  secret_response = secrets_client.get_secret_value(SecretId=secret_name)
+                  secret = json.loads(secret_response['SecretString'])
+                  admin_user = secret.get('username')
+                  admin_password = secret.get('password')
+                  
+                  if not admin_user or not admin_password:
+                      raise Exception(f"Secret {secret_name} does not contain username and password keys")
+                  
+                  logger.info(f"Successfully retrieved OpenSearch credentials for user: {admin_user}")
                   
                   # Set up authentication
                   userauth = (admin_user, admin_password)
@@ -719,6 +794,149 @@ Resources:
     Properties:
       ServiceToken: !GetAtt OpenSearchConfigurationLambda.Arn
       Region: !Ref Region
+      
+  # EC2 Instance Security Group (if not provided)
+  AppServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateSecurityGroup
+    Properties:
+      GroupDescription: Security group for RAG application server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access
+        - IpProtocol: tcp
+          FromPort: 5001
+          ToPort: 5001
+          CidrIp: 0.0.0.0/0
+          Description: Application access
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app-server-sg"
+          
+  # IAM Role for EC2 Instance
+  AppServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: OpenSearchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - es:ESHttpGet
+                  - es:ESHttpPost
+                  - es:ESHttpPut
+                Resource: !Sub 'arn:aws:es:${Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${OpenSearchCredentialsSecretName}*'
+                
+  AppServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppServerRole
+        
+  # EC2 Instance for RAG Application
+  AppServer:
+    Type: AWS::EC2::Instance
+    DependsOn: OpenSearchConfigurationCustomResource
+    Properties:
+      InstanceType: c6i.large
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !If [CreateSecurityGroup, !Ref AppServerSecurityGroup, !Ref InstanceSecurityGroup]
+      SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref AppServerInstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-rag-app-server"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          
+          # Update system packages
+          yum update -y
+          yum install -y git gcc openssl-devel bzip2-devel libffi-devel zlib-devel wget make
+          
+          # Install Python 3.13 from source
+          cd /opt
+          wget https://www.python.org/ftp/python/3.13.0/Python-3.13.0.tgz
+          tar xzf Python-3.13.0.tgz
+          cd Python-3.13.0
+          ./configure --enable-optimizations
+          make -j $(nproc)
+          make altinstall
+          
+          # Verify Python 3.13 installation (don't override system Python)
+          /usr/local/bin/python3.13 --version
+          /usr/local/bin/pip3.13 --version
+          
+          # Clone the repository
+          cd /home/ec2-user
+          git clone https://github.com/norrishuang/amazon-emr-upgrade-assistant.git
+          chown -R ec2-user:ec2-user amazon-emr-upgrade-assistant
+          
+          cd amazon-emr-upgrade-assistant
+          
+          # Set up environment file
+          cp qa_app/.env.example qa_app/.env
+          
+          # Extract OpenSearch host from endpoint URL
+          OPENSEARCH_HOST=$(echo "${OpenSearchDomainEndpoint}" | sed -e 's|^https://||' -e 's|^http://||')
+          
+          # Get OpenSearch credentials from Secrets Manager
+          SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${OpenSearchCredentialsSecretName} --region ${AWS::Region} --query SecretString --output text)
+          OPENSEARCH_USER=$(echo $SECRET_VALUE | jq -r '.username')
+          OPENSEARCH_PASSWORD=$(echo $SECRET_VALUE | jq -r '.password')
+          
+          # Update environment variables
+          sed -i "s/OPENSEARCH_HOST=.*/OPENSEARCH_HOST=$OPENSEARCH_HOST/" qa_app/.env
+          sed -i "s/OPENSEARCH_USER=.*/OPENSEARCH_USER=$OPENSEARCH_USER/" qa_app/.env
+          sed -i "s/OPENSEARCH_PASSWORD=.*/OPENSEARCH_PASSWORD=$OPENSEARCH_PASSWORD/" qa_app/.env
+          sed -i "s/OPENSEARCH_INDEX=.*/OPENSEARCH_INDEX=emr_upgrade_hive/" qa_app/.env
+          sed -i "s/OPENSEARCH_EMBEDDING_MODEL_ID=.*/OPENSEARCH_EMBEDDING_MODEL_ID=${OpenSearchConfigurationCustomResource.embeddingModelId}/" qa_app/.env
+          sed -i "s/OPENSEARCH_SECRET_NAME=.*/OPENSEARCH_SECRET_NAME=${OpenSearchCredentialsSecretName}/" qa_app/.env
+          sed -i "s/AWS_REGION=.*/AWS_REGION=${AWS::Region}/" qa_app/.env
+          
+          # Install jq if not already installed
+          yum install -y jq
+          
+          # Install dependencies using Python 3.13
+          /usr/local/bin/pip3.13 install --upgrade pip
+          /usr/local/bin/pip3.13 install -r requirements.txt
+          
+          # Start the application with Python 3.13
+          cd /home/ec2-user/amazon-emr-upgrade-assistant
+          nohup /usr/local/bin/python3.13 qa_app/app_conversational.py > app.log 2>&1 &
+          
+          # Wait a moment to ensure the application has started
+          sleep 5
+          
+          # Signal CloudFormation that the instance is ready (using system Python)
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AppServer --region ${AWS::Region}
 
 Outputs:
   InvokeDeepSeekRoleArn:
@@ -760,3 +978,11 @@ Outputs:
     Value: "my-conversation-search-pipeline-deepseek-zh"
     Export:
       Name: !Sub "${AWS::StackName}-SearchPipelineName"
+      
+  AppServerPublicIP:
+    Description: Public IP address of the application server
+    Value: !GetAtt AppServer.PublicIp
+    
+  AppServerPublicDNS:
+    Description: Public DNS name of the application server
+    Value: !GetAtt AppServer.PublicDnsName
