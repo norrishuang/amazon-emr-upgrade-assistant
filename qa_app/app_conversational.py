@@ -14,6 +14,9 @@ import sys
 
 load_dotenv()
 
+# 应用版本
+APP_VERSION = "v0.1"
+
 # 创建日志目录
 log_dir = 'logs'
 if not os.path.exists(log_dir):
@@ -180,7 +183,7 @@ def index():
         logger.info("未登录用户尝试访问主页，重定向到登录页")
         return redirect(url_for('login'))
     logger.info("用户访问主页")
-    return render_template('index_conversational.html')
+    return render_template('index_conversational.html', app_version=APP_VERSION)
 
 @app.route('/logout')
 def logout():

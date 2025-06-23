@@ -114,7 +114,12 @@ Resources:
             Action:
               - bedrock:InvokeModel
             Resource:
+              - !Sub 'arn:aws:bedrock:${Region}:${AWS::AccountId}:inference-profile/${LLMModelId}'
               - !Sub 'arn:aws:bedrock:${Region}::foundation-model/${LLMModelId}'
+              - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/deepseek.r1-v1:0'
+              - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/deepseek.r1-v1:0'
+              - !Sub 'arn:aws:bedrock:us-east-2::foundation-model/deepseek.r1-v1:0'
+              - !Sub 'arn:aws:bedrock:us-west-1::foundation-model/deepseek.r1-v1:0'
               - !Sub 'arn:aws:bedrock:${Region}::foundation-model/amazon.titan-embed-text-v2:0'
 
   InvokeDeepSeekRole:
@@ -127,7 +132,7 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service: 
+              Service:
                 - es.amazonaws.com
                 - aoss.amazonaws.com
             Action: sts:AssumeRole
@@ -420,15 +425,69 @@ Resources:
                       lambda_role_arn = f"arn:aws:iam::{account_id}:role/{lambda_execution_role}"
                       logger.info(f"Using fallback Lambda role: {lambda_role_arn}")
                   
-                  role_mapping = {
-                      "backend_roles": [
-                          create_connector_role_arn,
-                          lambda_invoke_ml_commons_role_arn,
-                          lambda_role_arn,
-                          # Add the OpenSearch Configuration Lambda role explicitly
-                          f"arn:aws:iam::{account_id}:role/opensearch-config-lambda-role-{os.environ.get('AWS_CLOUDFORMATION_STACK_NAME', '')}"
-                      ]
-                  }
+                  # First, get the existing role mapping to preserve current users
+                  try:
+                      logger.info("Getting existing role mapping for all_access role")
+                      get_response = requests.get(
+                          f"{opensearch_endpoint}/_plugins/_security/api/rolesmapping/all_access",
+                          auth=userauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      
+                      if get_response.status_code == 200:
+                          existing_mapping = get_response.json()
+                          logger.info(f"Existing role mapping: {json.dumps(existing_mapping)}")
+                          
+                          # Initialize role_mapping with existing values or empty lists if they don't exist
+                          role_mapping = {
+                              "backend_roles": existing_mapping.get("all_access", {}).get("backend_roles", []),
+                              "hosts": existing_mapping.get("all_access", {}).get("hosts", []),
+                              "users": existing_mapping.get("all_access", {}).get("users", [])
+                          }
+                          
+                          # Make sure admin user is in the users list
+                          if admin_user not in role_mapping["users"]:
+                              role_mapping["users"].append(admin_user)
+                              
+                          # Add our roles to backend_roles
+                          new_roles = [
+                              create_connector_role_arn,
+                              lambda_invoke_ml_commons_role_arn,
+                              lambda_role_arn,
+                              f"arn:aws:iam::{account_id}:role/opensearch-config-lambda-role-{os.environ.get('AWS_CLOUDFORMATION_STACK_NAME', '')}"
+                          ]
+                          
+                          # Add new roles without duplicates
+                          for role in new_roles:
+                              if role not in role_mapping["backend_roles"]:
+                                  role_mapping["backend_roles"].append(role)
+                      else:
+                          logger.warning(f"Failed to get existing role mapping: {get_response.status_code} - {get_response.text}")
+                          # If we can't get existing mapping, create a new one with admin user
+                          role_mapping = {
+                              "backend_roles": [
+                                  create_connector_role_arn,
+                                  lambda_invoke_ml_commons_role_arn,
+                                  lambda_role_arn,
+                                  f"arn:aws:iam::{account_id}:role/opensearch-config-lambda-role-{os.environ.get('AWS_CLOUDFORMATION_STACK_NAME', '')}"
+                              ],
+                              "users": [admin_user]
+                          }
+                  except Exception as e:
+                      logger.error(f"Error getting existing role mapping: {str(e)}")
+                      # If we can't get existing mapping, create a new one with admin user
+                      role_mapping = {
+                          "backend_roles": [
+                              create_connector_role_arn,
+                              lambda_invoke_ml_commons_role_arn,
+                              lambda_role_arn,
+                              f"arn:aws:iam::{account_id}:role/opensearch-config-lambda-role-{os.environ.get('AWS_CLOUDFORMATION_STACK_NAME', '')}"
+                          ],
+                          "users": [admin_user]
+                      }
+                  
+                  logger.info(f"Final role mapping to apply: {json.dumps(role_mapping)}")
                   
                   try:
                       response = requests.put(
@@ -484,9 +543,9 @@ Resources:
                   
                   # Create the connector directly without checking if it exists
                   connector_payload = {
-                      "name": "deepseek-connector",
-                      "description": "Connector for DeepSeek model via Amazon Bedrock",
-                      "version": "1",
+                      "name": "DeepSeek R1 model connector",
+                      "description": "Connector for my Bedrock DeepSeek model",
+                      "version": "1.0",
                       "protocol": "aws_sigv4",
                       "parameters": {
                           "region": bedrock_region,
@@ -494,26 +553,57 @@ Resources:
                           "action": "invoke-model",
                           "model_id": llm_model_id,
                           "content_type": "application/json",
-                          "request_body": "{\"prompt\": \"${parameters.prompt}\", \"max_tokens\": ${parameters.max_tokens}, \"temperature\": ${parameters.temperature}}",
-                          "response_body": "$.generation"
+                          "max_tokens": "4000",
+                          "temperature": "0.5",
                       },
                       "credential": {
                           "roleArn": invoke_role_arn
                       },
                       "actions": [
-                          {
-                              "action_type": "predict",
-                              "method": "POST",
-                              "url": f"https://bedrock-runtime.{bedrock_region}.amazonaws.com/model/${{parameters.model_id}}/invoke",
-                              "headers": {
-                                  "content-type": "${parameters.content_type}"
-                              },
-                              "request_body": "${parameters.request_body}",
-                              "pre_process_function": "connector.pre_process.bedrock",
-                              "post_process_function": "connector.post_process.bedrock"
-                          }
+                        {
+                          "action_type": "PREDICT",
+                          "method": "POST",
+                          "url": "https://bedrock-runtime.${parameters.region}.amazonaws.com/model/${parameters.model_id}/invoke",
+                          "headers": {
+                            "content-type": "application/json"
+                          },
+                          "request_body": "{ \"prompt\": \"<｜begin▁of▁sentence｜><｜User｜>${parameters.inputs}<｜Assistant｜>\", \"temperature\": ${parameters.temperature}, \"max_tokens\": ${parameters.max_tokens} }",
+                          "post_process_function": """
+                                try {
+                                // 从响应中提取生成的文本
+                                def completion = "";
+                                
+                                // 检查是否存在 choices 数组
+                                if (params.choices.size() > 0) {
+                                  // 获取第一个选择的文本
+                                  completion = params.choices[0].text;
+                                  
+                                } else {
+                                  completion = "无法从模型响应中提取文本";
+                        }
+                        
+                        
+                        def json = "{" +
+                                                 "\\"name\\": \\"response\\","+
+                                                "\\"dataAsMap\\": {" +
+                                                 "\\"completion\\":\\"" + escape(completion) + "\\"}" +
+                                                 "}";
+                                return json;
+                                
+                            
+                              } catch (Exception e) {
+                                // 返回错误信息
+                                return '{' +
+                                         '"name": "response",' +
+                                         '"dataAsMap": {' +
+                                            '"completion": "处理错误: ' + escape(e) + '"' +
+                                         '}' +
+                                       '}';
+                              }
+                            """
+                        }
                       ]
-                  }
+                    }
                   
                   try:
                       response = requests.post(
@@ -589,30 +679,32 @@ Resources:
                       "version": "1",
                       "protocol": "aws_sigv4",
                       "parameters": {
+                          "embeddingTypes": """["float"]""",
                           "region": region,
                           "service_name": "bedrock",
                           "action": "invoke-model",
+                          "normalize": "true",
                           "model_id": "amazon.titan-embed-text-v2:0",
                           "content_type": "application/json",
-                          "request_body": "{\"inputText\": \"${parameters.text}\"}",
-                          "response_body": "$.embedding"
+                          "dimensions": "1024"
                       },
                       "credential": {
                           "roleArn": invoke_role_arn
                       },
                       "actions": [
                           {
-                              "action_type": "predict",
-                              "method": "POST",
-                              "url": f"https://bedrock-runtime.{region}.amazonaws.com/model/${{parameters.model_id}}/invoke",
-                              "headers": {
-                                  "content-type": "${parameters.content_type}"
-                              },
-                              "request_body": "${parameters.request_body}",
-                              "pre_process_function": "connector.pre_process.bedrock",
-                              "post_process_function": "connector.post_process.bedrock"
-                          }
-                      ]
+                            "action_type": "PREDICT",
+                            "method": "POST",
+                            "url": "https://bedrock-runtime.${parameters.region}.amazonaws.com/model/${parameters.model_id}/invoke",
+                            "headers": {
+                              "x-amz-content-sha256": "required",
+                              "content-type": "application/json"
+                            },
+                            "request_body": """{ "inputText": "${parameters.inputText}", "dimensions": ${parameters.dimensions}, "normalize": ${parameters.normalize}, "embeddingTypes": ${parameters.embeddingTypes} }""",
+                            "pre_process_function": "connector.pre_process.bedrock.embedding",
+                                                                                                                                                                                                                                                         "post_process_function": "connector.post_process.bedrock.embedding"
+                        }
+                      ],
                   }
                   
                   try:
@@ -680,10 +772,8 @@ Resources:
                       logger.error(f"Error creating Titan embedding integration: {str(e)}")
                       raise e
                   
-                  # 6. Register and deploy DeepSeek Model - Not needed anymore as it's handled by the integration
-                  # Directly proceed to importing knowledge base data
                   
-                  # 7. Import Knowledge Base Data
+                  # 6. Create Index for Knowledge Base Data
                   logger.info("Importing Knowledge Base Data")
                   index_name = "emr_upgrade_hive"
                   
@@ -699,7 +789,7 @@ Resources:
                       "mappings": {
                           "properties": {
                               "text": {"type": "text"},
-                              "text_embedding": {
+                              "embedding": {
                                   "type": "knn_vector",
                                   "dimension": 1024,  # Titan embedding v2 dimension is 1024
                                   "method": {
@@ -712,54 +802,119 @@ Resources:
                           }
                       }
                   }
-                  
-                  
+          
+                  try:
+                      # Check if index already exists
+                      response = requests.head(
+                          f"{opensearch_endpoint}/{index_name}",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+          
+                      # If index doesn't exist, create it
+                      if response.status_code == 404:
+                          logger.info(f"Creating index {index_name}")
+                          response = requests.put(
+                              f"{opensearch_endpoint}/{index_name}",
+                              auth=awsauth,
+                              json=mapping,
+                              headers=headers,
+                              verify=False
+                          )
+                          logger.info(f"Create index response: {response.status_code} - {response.text}")
+                          if response.status_code >= 400:
+                              raise Exception(f"Failed to create index: {response.text}")
+                      else:
+                          logger.info(f"Index {index_name} already exists")
+                  except Exception as e:
+                      logger.error(f"Error importing knowledge base data: {str(e)}")
+                      raise e
+          
+          
+          
                   # 9. Create Search Pipeline
                   logger.info("Creating Search Pipeline")
-                  search_pipeline_payload = {
-                              "response_processors": [
-                                {
-                                  "retrieval_augmented_generation": {
-                                    "tag": "Demo pipeline",
-                                    "description": "Demo pipeline Using DeepSeek R1",
-                                    "model_id": "SPOgIZcBnlXe1e0nU4po",
-                                    "context_field_list": [
-                                      "text"
-                                    ],
-                                    "system_prompt": "你是一个Amazon EMR版本升级助手.",
-                                    "user_instructions": "针对给定的问题，用少于 200 个字给出简洁、翔实的答案"
-                                  }
-                                }
-                              ],
-                              "phase_results_processors": [
-                                {
-                                  "normalization-processor": {
-                                    "normalization": {
-                                      "technique": "min_max"
-                                    },
-                                    "combination": {
-                                      "technique": "arithmetic_mean",
-                                      "parameters": {
-                                        "weights": [
-                                          0.6,
-                                          0.4
-                                        ]
-                                      }
-                                    }
-                                  }
-                                }
-                              ]
-                          }
+                  pipeline_name = "my-conversation-search-pipeline-deepseek-zh"
                   
+                  # First check if the pipeline already exists
                   try:
+                      logger.info(f"Checking if search pipeline '{pipeline_name}' already exists")
+                      check_response = requests.get(
+                          f"{opensearch_endpoint}/_search/pipeline/{pipeline_name}",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      
+                      # If pipeline exists (200 OK), delete it first
+                      if check_response.status_code == 200:
+                          logger.info(f"Search pipeline '{pipeline_name}' already exists. Deleting it first.")
+                          delete_response = requests.delete(
+                              f"{opensearch_endpoint}/_search/pipeline/{pipeline_name}",
+                              auth=awsauth,
+                              headers=headers,
+                              verify=False
+                          )
+                          logger.info(f"Delete pipeline response: {delete_response.status_code} - {delete_response.text}")
+                          
+                          if delete_response.status_code >= 400:
+                              logger.warning(f"Failed to delete existing pipeline: {delete_response.text}")
+                              # Continue anyway, as PUT might still work to update it
+                      elif check_response.status_code != 404:
+                          # If response is not 404 (Not Found) or 200 (OK), log it but continue
+                          logger.warning(f"Unexpected response when checking pipeline: {check_response.status_code} - {check_response.text}")
+                  except Exception as e:
+                      logger.warning(f"Error checking/deleting existing pipeline: {str(e)}")
+                      # Continue with creation attempt
+                  
+                  # Define the search pipeline payload
+                  search_pipeline_payload = {
+                      "response_processors": [
+                        {
+                          "retrieval_augmented_generation": {
+                            "tag": "Demo pipeline",
+                            "description": "Demo pipeline Using DeepSeek R1",
+                            "model_id": "SPOgIZcBnlXe1e0nU4po",
+                            "context_field_list": [
+                              "text"
+                            ],
+                            "system_prompt": "你是一个Amazon EMR版本升级助手.",
+                            "user_instructions": "针对给定的问题，用少于 200 个字给出简洁、翔实的答案"
+                          }
+                        }
+                      ],
+                      "phase_results_processors": [
+                        {
+                          "normalization-processor": {
+                            "normalization": {
+                              "technique": "min_max"
+                            },
+                            "combination": {
+                              "technique": "arithmetic_mean",
+                              "parameters": {
+                                "weights": [
+                                  0.6,
+                                  0.4
+                                ]
+                              }
+                            }
+                          }
+                        }
+                      ]
+                  }
+                  
+                  # Create the search pipeline
+                  try:
+                      logger.info(f"Creating search pipeline '{pipeline_name}'")
                       response = requests.put(
-                          f"{opensearch_endpoint}/_search/pipeline/my-conversation-search-pipeline-deepseek-zh",
+                          f"{opensearch_endpoint}/_search/pipeline/{pipeline_name}",
                           auth=awsauth,
                           json=search_pipeline_payload,
                           headers=headers,
                           verify=False
                       )
-                      logger.info(f"Search pipeline response: {response.status_code} - {response.text}")
+                      logger.info(f"Search pipeline creation response: {response.status_code} - {response.text}")
                       if response.status_code >= 400:
                           raise Exception(f"Failed to create Search pipeline: {response.text}")
                   except Exception as e:

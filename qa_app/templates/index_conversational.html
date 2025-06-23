@@ -376,6 +376,22 @@
             margin-top: 8px;
             font-weight: 500;
         }
+        
+        .title-version-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        
+        .version-badge {
+            background-color: #007bff;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
     </style>
 </head>
 <body>
@@ -418,7 +434,10 @@
         <div class="chat-container">
             <div class="header-container">
                 <img src="{{ url_for('static', filename='emr-logo.jpeg') }}" alt="EMR Logo" class="header-logo">
-                <h2 class="mb-0">Amazon EMR 升级助手</h2>
+                <div class="title-version-container">
+                    <h2 class="mb-0">Amazon EMR 升级助手</h2>
+                    <span class="version-badge">{{ app_version }}</span>
+                </div>
                 <a href="{{ url_for('logout') }}" class="btn btn-outline-danger ms-auto">登出</a>
             </div>
             <div class="llm-powered">LLM powered by DeepSeek</div>
