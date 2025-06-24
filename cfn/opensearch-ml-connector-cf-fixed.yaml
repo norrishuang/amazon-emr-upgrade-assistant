@@ -1049,6 +1049,9 @@ Resources:
           /usr/local/bin/python3.13 --version
           /usr/local/bin/pip3.13 --version
           
+          # Install jq if not already installed
+          yum install -y jq
+          
           # Clone the repository
           cd /home/ec2-user
           git clone https://github.com/norrishuang/amazon-emr-upgrade-assistant.git
@@ -1075,9 +1078,6 @@ Resources:
           sed -i "s/OPENSEARCH_EMBEDDING_MODEL_ID=.*/OPENSEARCH_EMBEDDING_MODEL_ID=${OpenSearchConfigurationCustomResource.embeddingModelId}/" qa_app/.env
           sed -i "s/OPENSEARCH_SECRET_NAME=.*/OPENSEARCH_SECRET_NAME=${OpenSearchCredentialsSecretName}/" qa_app/.env
           sed -i "s/AWS_REGION=.*/AWS_REGION=${AWS::Region}/" qa_app/.env
-          
-          # Install jq if not already installed
-          yum install -y jq
           
           # Install dependencies using Python 3.13
           /usr/local/bin/pip3.13 install --upgrade pip
