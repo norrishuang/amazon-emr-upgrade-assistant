@@ -875,7 +875,7 @@ Resources:
                           "retrieval_augmented_generation": {
                             "tag": "Demo pipeline",
                             "description": "Demo pipeline Using DeepSeek R1",
-                            "model_id": "SPOgIZcBnlXe1e0nU4po",
+                            "model_id": deepseek_model_id,
                             "context_field_list": [
                               "text"
                             ],

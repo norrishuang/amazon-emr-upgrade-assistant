@@ -271,6 +271,11 @@ def search():
                 "memory_id": memory_id,
                 "message_size": 3
             }
+        },
+        "highlight": {
+            "pre_tags": ["<strong>"],
+            "post_tags": ["</strong>"],
+            "fields": {"text": {}}
         }
     }
     
