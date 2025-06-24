@@ -56,7 +56,7 @@ Conditions:
 Mappings:
   RegionMap:
     us-east-1:
-      AMI: ami-0e8a34246278c21e4  # Amazon Linux 2023 AMI
+      AMI: ami-09e6f87a47903347c  # Amazon Linux 2023 AMI
     us-east-2:
       AMI: ami-07a7a8c10c60f25be
     us-west-1:
