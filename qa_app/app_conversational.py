@@ -258,7 +258,7 @@ def search():
                 ]
             }
         },
-        "size": 5,
+        "size": 10,
         "_source": [
             "text"
         ],
@@ -266,7 +266,7 @@ def search():
             "generative_qa_parameters": {
                 "llm_model": "bedrock/claude",
                 "llm_question": query,
-                "context_size": 5,
+                "context_size": 10,
                 "timeout": 100,
                 "memory_id": memory_id,
                 "message_size": 3
