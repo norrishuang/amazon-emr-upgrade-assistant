@@ -68,6 +68,7 @@ async def search_context(
         }
     }
     try:
+        print("OPENSEARCH_USER:", os.getenv('OPENSEARCH_USER'))
         response = client.search(
             body=search_query,
             index=os.getenv('OPENSEARCH_INDEX', 'opensearch_kl_index'),
