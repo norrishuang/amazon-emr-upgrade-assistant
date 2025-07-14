@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>登录 - 知识库</title>
+</head>
+<body>
+    <h2>知识库登录</h2>
+    {% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+    <form method="post">
+        <label>邀请码：</label>
+        <input type="text" name="inviteCode" required />
+        <button type="submit">登录</button>
+    </form>
+</body>
+</html> 

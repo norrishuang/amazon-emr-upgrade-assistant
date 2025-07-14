@@ -1,0 +1,3 @@
+Flask
+opensearch-py
+python-dotenv 
