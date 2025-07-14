@@ -62,10 +62,10 @@ async def search_context(
     pipeline: str = "my-conversation-search-pipeline-deepseek-zh"
 ) -> str:
     """
-    用于检索 OpenSearch 上的内容并返回前3条结果拼接的答案。
+    用于检索知识库关于 Amazon EMR 版本升级到的相关内容，包括EMR各个组件 hive,spark,flink,hbase 在每个版本的新增特性和BUG修复。
 
     Args:
-        query: 检索的查询内容
+        query: 检索的查询内容，例如：EMR 6.10.0 版本升级到 6.11.0 后，hive 的哪些新增特性？
         user_id: 用户ID（可选）
         pipeline: OpenSearch 检索 pipeline 名称（可选）
 
