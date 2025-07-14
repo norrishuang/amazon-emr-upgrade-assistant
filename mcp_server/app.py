@@ -59,7 +59,7 @@ mcp = FastMCP("opensearch_mcp_server")
 async def search_context(
     query: str,
     user_id: str = "",
-    pipeline: str = "my-conversation-search-pipeline-deepseek-zh"
+    pipeline: str = "hybird-search-pipeline-for-mcp-server"
 ) -> str:
     """
     用于检索知识库关于 Amazon EMR 版本升级到的相关内容，包括EMR各个组件 hive,spark,flink,hbase 在每个版本的新增特性和BUG修复。
@@ -99,14 +99,6 @@ async def search_context(
         "_source": [
             "text"
         ],
-        "ext": {
-            "generative_qa_parameters": {
-                "llm_model": "bedrock/claude",
-                "llm_question": query,
-                "context_size": 10,
-                "timeout": 100
-            }
-        },
         "highlight": {
             "pre_tags": ["<strong>"],
             "post_tags": ["</strong>"],
