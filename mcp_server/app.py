@@ -96,7 +96,17 @@ async def search_context(
             }
         },
         "size": 10,
-        "_source": ["text"],
+        "_source": [
+            "text"
+        ],
+        "ext": {
+            "generative_qa_parameters": {
+                "llm_model": "bedrock/claude",
+                "llm_question": query,
+                "context_size": 10,
+                "timeout": 100
+            }
+        },
         "highlight": {
             "pre_tags": ["<strong>"],
             "post_tags": ["</strong>"],
