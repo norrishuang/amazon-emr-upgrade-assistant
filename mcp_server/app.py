@@ -1,4 +1,7 @@
 import os
+import json
+import boto3
+from botocore.exceptions import ClientError
 from typing import Any
 from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection
@@ -6,16 +9,49 @@ from mcp.server.fastmcp import FastMCP
 
 load_dotenv()
 
-# OpenSearch 客户端初始化
-client = OpenSearch(
-    hosts=[{'host': os.getenv('OPENSEARCH_HOST', 'localhost'), 'port': int(os.getenv('OPENSEARCH_PORT', 9200))}],
-    http_auth=(os.getenv('OPENSEARCH_USER', 'admin'), os.getenv('OPENSEARCH_PASS', 'admin')),
-    use_ssl=True,
-    verify_certs=False,
-    ssl_show_warn=False,
-    connection_class=RequestsHttpConnection,
-    timeout=120
-)
+def get_secret(secret_name, region_name='us-east-1'):
+    """
+    从 AWS Secrets Manager 获取密钥
+    """
+    session = boto3.session.Session()
+    client = session.client(
+        service_name='secretsmanager',
+        region_name=region_name
+    )
+    try:
+        get_secret_value_response = client.get_secret_value(
+            SecretId=secret_name
+        )
+    except ClientError as e:
+        print(f"获取密钥失败: {str(e)}")
+        raise e
+    else:
+        if 'SecretString' in get_secret_value_response:
+            return json.loads(get_secret_value_response['SecretString'])
+        else:
+            print("密钥值不是字符串类型")
+            raise ValueError("Secret value is not a string")
+
+# 从 Secrets Manager 获取 OpenSearch 认证信息
+try:
+    secret_name = os.getenv('OPENSEARCH_SECRET_NAME', 'opensearch_credentials')
+    region_name = os.getenv('AWS_REGION', 'us-east-1')
+    opensearch_credentials = get_secret(secret_name, region_name)
+
+    # OpenSearch 客户端配置
+    client = OpenSearch(
+        hosts=[{'host': os.getenv('OPENSEARCH_HOST', 'localhost'), 'port': int(os.getenv('OPENSEARCH_PORT', 9200))}],
+        http_auth=(opensearch_credentials['username'], opensearch_credentials['password']),
+        use_ssl=True,
+        verify_certs=False,
+        ssl_show_warn=False,
+        connection_class=RequestsHttpConnection,
+        timeout=120
+    )
+    print("OpenSearch 客户端初始化成功")
+except Exception as e:
+    print(f"OpenSearch 客户端初始化失败: {str(e)}")
+    raise
 
 mcp = FastMCP("opensearch_mcp_server")
 
@@ -68,7 +104,6 @@ async def search_context(
         }
     }
     try:
-        print("OPENSEARCH_USER:", os.getenv('OPENSEARCH_USER'))
         response = client.search(
             body=search_query,
             index=os.getenv('OPENSEARCH_INDEX', 'opensearch_kl_index'),
