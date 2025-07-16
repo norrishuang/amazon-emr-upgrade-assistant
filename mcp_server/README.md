@@ -4,85 +4,51 @@
 
 ## 1. 环境准备
 
-- Python 3.8+
+- Python 3.10+
 - OpenSearch 实例（可本地或云端）
+- Node.js 和 npm
 
 ## 2. 安装依赖
 
 ```bash
-cd mcp_server
-pip install -r requirements.txt
+pip install "mcp[cli]" httpx opensearch-py python-dotenv
+sudo dnf install nodejs npm -y
 ```
 
-## 3. 配置环境变量
+## 3. 环境变量（.env）配置
 
-可在 `.env` 文件中配置如下内容：
+请在 `mcp_server` 目录下创建 `.env` 文件，内容示例：
 
 ```
-MCP_API_KEY=your-mcp-api-key
-OPENSEARCH_HOST=localhost
+# OpenSearch 连接配置
+OPENSEARCH_HOST=your-opensearch-host
 OPENSEARCH_PORT=9200
-OPENSEARCH_USER=admin
-OPENSEARCH_PASS=admin
 OPENSEARCH_INDEX=opensearch_kl_index
 OPENSEARCH_EMBEDDING_MODEL_ID=-kB2sZUB0LCOh9zdNaiU
+
+# AWS Secrets Manager 配置
+OPENSEARCH_SECRET_NAME=opensearch_credentials   # 存储 OpenSearch 用户名密码的 secret 名称
+AWS_REGION=us-east-1                           # secret 所在的 AWS 区域
 ```
 
-## 4. 启动 MCP Server
+> OpenSearch 用户名和密码需存储在 AWS Secrets Manager 中，secret 内容格式如下：
+> ```json
+> {"username": "your-username", "password": "your-password"}
+> ```
+
+## 4. 启动 MCP Inspector 进行测试
 
 ```bash
-python app.py
+uv run mcp dev /home/ec2-user/amazon-emr-upgrade-assistant/mcp_server/app.py
 ```
 
-默认监听 5100 端口。
+启动后访问 [http://127.0.0.1:6274](http://127.0.0.1:6274) 打开 UI 测试 MCP Server。
 
-## 5. API 说明
+## 5. 服务说明
 
-### POST /v1/mcp/context
+本服务为 Amazon EMR 版本升级知识库检索，支持 EMR 组件（hive、spark、flink、hbase）在各版本中的新增特性和 BUG 修复内容的查询。
 
-- Header: `x-api-key: your-mcp-api-key`
-- Content-Type: application/json
-- Body 示例：
-```
-{
-  "query": "EMR 升级步骤",
-  "messages": [
-    {"role": "user", "content": "EMR 升级步骤"},
-    {"role": "assistant", "content": "请问你使用的 EMR 版本？"}
-  ],
-  "user_id": "user-xxx",
-  "context": {}
-}
-```
-- 返回示例：
-```
-{
-  "context": {},
-  "results": [
-    {"text": "...", "score": 1.23}
-  ],
-  "answer": "..."
-}
-```
+## 6. 其他说明
 
-- `context`：原样返回，便于多轮对话
-- `results`：检索结果列表
-- `answer`：自动拼接前3条结果文本（可按需自定义）
-
-## 6. 适配说明
-本接口兼容 DeepSeek、百度文心等大模型 MCP 插件协议，可直接用于 LLM 检索增强。
-
-### POST /search
-
-- Header: `x-api-key: your-mcp-api-key`
-- Body: `{ "query": "你的问题", "pipeline": "my-conversation-search-pipeline-deepseek-zh" }`
-- 返回：检索结果列表
-
-示例：
-
-```bash
-curl -X POST http://localhost:5100/search \
-  -H 'Content-Type: application/json' \
-  -H 'x-api-key: your-mcp-api-key' \
-  -d '{"query": "EMR 升级步骤"}'
-``` 
+- 本 MCP Server 通过 MCP 协议与客户端通信，无需监听 HTTP 端口。
+- 其他原有内容保留。 

@@ -1,3 +1,4 @@
-Flask
+mcp[cli]
+httpx
 opensearch-py
-python-dotenv 
+python-dotenv

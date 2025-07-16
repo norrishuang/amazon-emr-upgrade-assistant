@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="zh">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Amazon EMR 版本升级助手</title>
+    <link href="https://unpkg.com/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        .chat-container {
+            height: calc(100vh - 200px);
+            min-height: 500px;
+        }
+
+        .messages-container {
+            height: calc(100% - 120px);
+            overflow-y: auto;
+        }
+
+        .message {
+            margin-bottom: 1rem;
+            padding: 1rem;
+            border-radius: 0.5rem;
+        }
+
+        .user-message {
+            background-color: #dbeafe;
+            margin-left: 2rem;
+        }
+
+        .assistant-message {
+            background-color: #f0fdf4;
+            margin-right: 2rem;
+        }
+
+        .thinking-section {
+            background-color: #fef3c7;
+            border-left: 4px solid #f59e0b;
+            margin-bottom: 1rem;
+        }
+
+        .context-section {
+            background-color: #f3f4f6;
+            border-left: 4px solid #6b7280;
+            font-size: 0.875rem;
+        }
+
+        /* 动态等待效果 */
+        .loading-dots {
+            display: inline-block;
+        }
+
+        .loading-dots .dot {
+            animation: loading 1.4s infinite ease-in-out both;
+            display: inline-block;
+        }
+
+        .loading-dots .dot:nth-child(1) {
+            animation-delay: -0.32s;
+        }
+
+        .loading-dots .dot:nth-child(2) {
+            animation-delay: -0.16s;
+        }
+
+        @keyframes loading {
+
+            0%,
+            80%,
+            100% {
+                opacity: 0.3;
+                transform: scale(0.8);
+            }
+
+            40% {
+                opacity: 1;
+                transform: scale(1);
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-gray-50 min-h-screen">
+    <div class="container mx-auto px-4 py-6">
+        <!-- 头部 -->
+        <div class="text-center mb-6">
+            <div class="flex justify-between items-center mb-4">
+                <div></div>
+                <div>
+                    <h1 class="text-4xl font-bold text-gray-800 mb-2">🚀 Amazon EMR 版本升级助手</h1>
+                    <p class="text-gray-600">基于 AI 的智能 EMR 升级指导，帮您解决版本升级中的各种问题</p>
+                </div>
+                <div class="flex flex-col space-y-2">
+                    <button id="testStreamBtn" class="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors">
+                        🧪 测试流式
+                    </button>
+                    <button id="memoryStatsBtn" class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 transition-colors">
+                        📊 记忆统计
+                    </button>
+                    <button id="recentMemoriesBtn" class="px-3 py-1 bg-green-500 text-white rounded text-sm hover:bg-green-600 transition-colors">
+                        📚 历史记忆
+                    </button>
+                    <button id="clearMemoriesBtn" class="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors">
+                        🗑️ 清除记忆
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 聊天界面 -->
+        <div class="max-w-4xl mx-auto bg-white rounded-lg shadow-lg chat-container">
+            <!-- 消息区域 -->
+            <div id="messages" class="messages-container p-4 space-y-4">
+                <!-- 欢迎消息 -->
+                <div class="message assistant-message">
+                    <div class="flex items-start space-x-3">
+                        <div
+                            class="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white font-bold">
+                            AI
+                        </div>
+                        <div class="flex-1">
+                            <div class="font-semibold text-green-700 mb-1">EMR 升级助手</div>
+                            <div class="text-gray-700">
+                                <p>👋 您好！我是 Amazon EMR 版本升级助手。</p>
+                                <p>我可以帮助您：</p>
+                                <ul class="list-disc list-inside mt-2 space-y-1">
+                                    <li>了解不同 EMR 版本之间的差异</li>
+                                    <li>获取组件兼容性信息（Hive、Spark、Flink、HBase等）</li>
+                                    <li>解决升级过程中的技术问题</li>
+                                    <li>提供最佳实践建议</li>
+                                </ul>
+                                <p class="mt-2">请输入您的问题，比如："从 EMR 5.x 升级到 6.x 需要注意什么？"</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 输入区域 -->
+            <div class="border-t p-4">
+                <div class="flex space-x-3">
+                    <textarea id="messageInput"
+                        class="flex-1 px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                        rows="2" placeholder="请输入您的 EMR 升级相关问题..." onkeydown="handleKeyDown(event)"></textarea>
+                    <button id="sendButton" onclick="sendMessage()"
+                        class="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed">
+                        发送
+                    </button>
+                </div>
+                <div class="mt-2 text-sm text-gray-500">
+                    按 Enter 快速发送
+                </div>
+            </div>
+        </div>
+
+        <!-- 移除加载指示器 -->
+    </div>
+
+    <script>
+        let isLoading = false;
+
+        function handleKeyDown(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        async function sendMessage() {
+            if (isLoading) return;
+
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+
+            if (!message) return;
+
+            // 添加用户消息
+            addMessage(message, 'user');
+            input.value = '';
+
+            // 不显示加载状态，直接创建助手消息容器
+            isLoading = true;
+            const sendButton = document.getElementById('sendButton');
+            sendButton.disabled = true;
+            sendButton.textContent = '发送中...';
+
+            // 创建助手消息容器
+            const assistantMessageDiv = createAssistantMessageContainer();
+
+            try {
+                // 使用 fetch 进行流式响应
+                const response = await fetch('/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query: message })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                let accumulatedContent = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // 保留不完整的行
+
+                    for (const line of lines) {
+                        if (line.trim() && line.startsWith('data: ')) {
+                            try {
+                                const jsonStr = line.slice(6).trim();
+                                if (jsonStr) {
+                                    const data = JSON.parse(jsonStr);
+                                    console.log('处理流数据:', data); // 调试日志
+                                    handleStreamData(data, assistantMessageDiv);
+
+                                    if (data.type === 'content') {
+                                        accumulatedContent = data.accumulated || (accumulatedContent + data.content);
+                                    }
+                                }
+                            } catch (e) {
+                                console.error('解析流数据失败:', e, '原始数据:', line);
+                            }
+                        }
+                    }
+                }
+
+            } catch (error) {
+                console.error('流式请求失败:', error);
+                addMessage(`❌ 网络错误: ${error.message}`, 'error');
+            } finally {
+                // 恢复发送按钮状态
+                isLoading = false;
+                sendButton.disabled = false;
+                sendButton.textContent = '发送';
+            }
+        }
+
+        function createAssistantMessageContainer() {
+            const messagesContainer = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant-message';
+
+            messageDiv.innerHTML = `
+                <div class="flex items-start space-x-3">
+                    <div class="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white font-bold">
+                        🤖
+                    </div>
+                    <div class="flex-1">
+                        <div class="font-semibold text-green-700 mb-1">
+                            EMR 升级助手 
+                            <span class="loading-dots ml-2 text-blue-500">
+                                <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+                            </span>
+                        </div>
+                        <div class="status-area text-sm text-gray-600 mb-2"></div>
+                        <div class="content-area text-gray-700 prose prose-sm max-w-none"></div>
+                    </div>
+                </div>
+            `;
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+            return messageDiv;
+        }
+
+        function handleStreamData(data, messageDiv) {
+            const statusArea = messageDiv.querySelector('.status-area');
+            const contentArea = messageDiv.querySelector('.content-area');
+            const loadingDots = messageDiv.querySelector('.loading-dots');
+
+            console.log('收到流数据:', data); // 调试日志
+
+            switch (data.type) {
+                case 'heartbeat':
+                    // 心跳信号，不显示任何内容
+                    console.log('收到心跳信号');
+                    break;
+
+                case 'content':
+                    // 隐藏等待效果和状态信息
+                    if (loadingDots) {
+                        loadingDots.style.display = 'none';
+                    }
+                    statusArea.style.display = 'none';
+
+                    // 实时更新内容区域 - 关键改进！
+                    let content = '';
+                    if (data.accumulated) {
+                        // 使用累积内容
+                        content = data.accumulated;
+                    } else if (data.content) {
+                        // 如果没有累积内容，就追加到现有内容
+                        const existingContent = contentArea.getAttribute('data-raw-content') || '';
+                        content = existingContent + data.content;
+                    }
+
+                    // 保存原始内容
+                    contentArea.setAttribute('data-raw-content', content);
+
+                    // 使用 marked.parse 渲染 Markdown
+                    if (content) {
+                        try {
+                            contentArea.innerHTML = marked.parse(content);
+                        } catch (e) {
+                            // 如果 Markdown 解析失败，使用简单的文本格式化
+                            const formattedContent = content
+                                .replace(/\n/g, '<br>')
+                                .replace(/## (.*?)(<br>|$)/g, '<h2 class="text-lg font-semibold mt-4 mb-2 text-gray-800">$1</h2>')
+                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                                .replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+                            contentArea.innerHTML = formattedContent;
+                        }
+                    }
+
+                    // 立即滚动到底部
+                    const messagesContainer = document.getElementById('messages');
+                    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+                    break;
+
+                case 'error':
+                    // 隐藏等待效果
+                    if (loadingDots) {
+                        loadingDots.style.display = 'none';
+                    }
+                    statusArea.innerHTML = `<span class="text-red-600">❌ ${data.error}</span>`;
+                    statusArea.style.display = 'block';
+                    break;
+
+                case 'end':
+                    // 流式响应结束，隐藏等待效果
+                    if (loadingDots) {
+                        loadingDots.style.display = 'none';
+                    }
+                    console.log('流式响应结束');
+                    break;
+            }
+        }
+
+        function addMessage(content, type) {
+            const messagesContainer = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+
+            if (type === 'user') {
+                messageDiv.className = 'message user-message';
+                messageDiv.innerHTML = `
+                    <div class="flex items-start space-x-3 justify-end">
+                        <div class="flex-1 text-right">
+                            <div class="font-semibold text-blue-700 mb-1">您</div>
+                            <div class="text-gray-700">${escapeHtml(content)}</div>
+                        </div>
+                        <div class="w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-white font-bold">
+                            U
+                        </div>
+                    </div>
+                `;
+            } else if (type === 'error') {
+                messageDiv.className = 'message bg-red-50 border border-red-200';
+                messageDiv.innerHTML = `
+                    <div class="text-red-700">${escapeHtml(content)}</div>
+                `;
+            }
+
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function addAssistantMessage(data) {
+            const messagesContainer = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message assistant-message';
+
+            let content = `
+                <div class="flex items-start space-x-3">
+                    <div class="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white font-bold">
+                        🤖
+                    </div>
+                    <div class="flex-1">
+                        <div class="font-semibold text-green-700 mb-1">EMR 升级助手 (Strands Agent)</div>
+            `;
+
+            // 添加 AI 思考过程（如果有）
+            if (data.thinking && data.thinking.trim()) {
+                content += `
+                    <details class="mb-4">
+                        <summary class="cursor-pointer text-sm text-yellow-700 hover:text-yellow-600 font-medium">
+                            🧠 AI 思考过程 (点击展开/折叠)
+                        </summary>
+                        <div class="thinking-section mt-2 p-3 rounded bg-yellow-50 border-l-4 border-yellow-400">
+                            <div class="text-gray-700 whitespace-pre-wrap text-sm">${escapeHtml(data.thinking)}</div>
+                        </div>
+                    </details>
+                `;
+            }
+
+            // 添加工具使用情况（如果有）
+            if (data.tools_used && data.tools_used.length > 0) {
+                content += `
+                    <details class="mb-4">
+                        <summary class="cursor-pointer text-sm text-blue-700 hover:text-blue-600 font-medium">
+                            🔧 使用的工具 (${data.tools_used.length} 个)
+                        </summary>
+                        <div class="tools-section mt-2 p-3 rounded bg-blue-50 border-l-4 border-blue-400">
+                `;
+
+                data.tools_used.forEach(tool => {
+                    content += `
+                        <div class="mb-2 text-sm">
+                            <span class="font-medium text-blue-800">🔍 ${tool.name || 'search_context'}</span>
+                            ${tool.description ? `<div class="text-gray-600 ml-4">${escapeHtml(tool.description)}</div>` : ''}
+                        </div>
+                    `;
+                });
+
+                content += `
+                        </div>
+                    </details>
+                `;
+            }
+
+            // 添加主要回答
+            if (data.answer) {
+                content += `
+                    <div class="text-gray-700 prose prose-sm max-w-none">
+                        ${marked.parse(data.answer)}
+                    </div>
+                `;
+            }
+
+            // 添加知识库上下文（折叠显示）
+            if (data.context && data.context.trim()) {
+                content += `
+                    <details class="mt-4">
+                        <summary class="cursor-pointer text-sm text-gray-600 hover:text-gray-800">
+                            📚 查看相关知识库内容
+                        </summary>
+                        <div class="context-section mt-2 p-3 rounded bg-gray-50 border-l-4 border-gray-400">
+                            <div class="text-gray-600 whitespace-pre-wrap text-sm">${escapeHtml(data.context)}</div>
+                        </div>
+                    </details>
+                `;
+            }
+
+            content += `
+                    </div>
+                </div>
+            `;
+
+            messageDiv.innerHTML = content;
+            messagesContainer.appendChild(messageDiv);
+            messagesContainer.scrollTop = messagesContainer.scrollHeight;
+        }
+
+        function setLoading(loading) {
+            isLoading = loading;
+            const loadingDiv = document.getElementById('loading');
+            const sendButton = document.getElementById('sendButton');
+
+            if (loading) {
+                loadingDiv.classList.remove('hidden');
+                sendButton.disabled = true;
+                sendButton.textContent = '发送中...';
+            } else {
+                loadingDiv.classList.add('hidden');
+                sendButton.disabled = false;
+                sendButton.textContent = '发送';
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // 记忆管理功能
+        async function showMemoryStats() {
+            try {
+                const response = await fetch('/memory/stats');
+                const data = await response.json();
+                
+                if (data.success) {
+                    const stats = data.stats;
+                    let message = `📊 记忆系统统计信息：\n\n`;
+                    message += `• 状态: ${stats.enabled ? '✅ 已启用' : '❌ 未启用'}\n`;
+                    message += `• 总记忆数量: ${stats.total_memories || 0}\n`;
+                    message += `• 用户ID: ${stats.user_id || '未知'}\n`;
+                    message += `• OpenSearch连接: ${stats.opensearch_connected ? '✅ 正常' : '❌ 异常'}\n`;
+                    
+                    if (stats.earliest_memory) {
+                        message += `• 最早记忆: ${stats.earliest_memory.substring(0, 19)}\n`;
+                    }
+                    if (stats.latest_memory) {
+                        message += `• 最新记忆: ${stats.latest_memory.substring(0, 19)}\n`;
+                    }
+                    
+                    alert(message);
+                } else {
+                    alert(`❌ 获取记忆统计失败: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ 网络错误: ${error.message}`);
+            }
+        }
+
+        async function showRecentMemories() {
+            try {
+                const response = await fetch('/memory/recent?limit=5');
+                const data = await response.json();
+                
+                if (data.success) {
+                    if (data.memories.length === 0) {
+                        alert('📚 暂无历史记忆记录');
+                        return;
+                    }
+                    
+                    let message = `📚 最近的 ${data.memories.length} 条记忆：\n\n`;
+                    
+                    data.memories.forEach((memory, index) => {
+                        const timestamp = memory.metadata?.timestamp || '未知时间';
+                        const memoryText = memory.memory || '';
+                        const preview = memoryText.length > 100 ? 
+                            memoryText.substring(0, 100) + '...' : memoryText;
+                        
+                        message += `${index + 1}. ${timestamp.substring(0, 19)}\n`;
+                        message += `   ${preview}\n\n`;
+                    });
+                    
+                    alert(message);
+                } else {
+                    alert(`❌ 获取历史记忆失败: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ 网络错误: ${error.message}`);
+            }
+        }
+
+        async function clearMemories() {
+            if (!confirm('⚠️ 确定要清除所有历史记忆吗？此操作不可撤销！')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/memory/clear', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert('✅ 所有历史记忆已成功清除');
+                } else {
+                    alert(`❌ 清除记忆失败: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ 网络错误: ${error.message}`);
+            }
+        }
+
+        // 测试流式响应功能
+        async function testStreamResponse() {
+            console.log('🧪 开始测试流式响应...');
+            
+            // 创建助手消息容器
+            const assistantMessageDiv = createAssistantMessageContainer();
+            
+            try {
+                // 调用测试流式响应接口
+                const response = await fetch('/test-stream');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let buffer = '';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop(); // 保留不完整的行
+                    
+                    for (const line of lines) {
+                        if (line.trim() && line.startsWith('data: ')) {
+                            try {
+                                const jsonStr = line.slice(6).trim();
+                                if (jsonStr) {
+                                    const data = JSON.parse(jsonStr);
+                                    console.log('🧪 测试流数据:', data);
+                                    handleStreamData(data, assistantMessageDiv);
+                                }
+                            } catch (e) {
+                                console.error('🧪 解析测试流数据失败:', e, '原始数据:', line);
+                            }
+                        }
+                    }
+                }
+                
+                console.log('🧪 测试流式响应完成');
+                
+            } catch (error) {
+                console.error('🧪 测试流式响应失败:', error);
+                addMessage(`❌ 测试流式响应失败: ${error.message}`, 'error');
+            }
+        }
+
+        // 页面加载完成后聚焦输入框并绑定事件
+        document.addEventListener('DOMContentLoaded', function () {
+            document.getElementById('messageInput').focus();
+            
+            // 绑定记忆管理按钮事件
+            document.getElementById('testStreamBtn').addEventListener('click', testStreamResponse);
+            document.getElementById('memoryStatsBtn').addEventListener('click', showMemoryStats);
+            document.getElementById('recentMemoriesBtn').addEventListener('click', showRecentMemories);
+            document.getElementById('clearMemoriesBtn').addEventListener('click', clearMemories);
+        });
+    </script>
+</body>
+
+</html>

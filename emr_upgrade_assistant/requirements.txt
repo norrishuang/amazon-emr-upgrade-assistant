@@ -1,0 +1,9 @@
+flask>=2.3.0
+python-dotenv>=1.0.0
+strands-agents
+strands-agents-tools
+strands-agents-builder
+gunicorn>=21.2.0
+waitress>=2.1.2
+mem0ai
+opensearch-py>=3.0.0
