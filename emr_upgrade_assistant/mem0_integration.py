@@ -146,14 +146,14 @@ class Mem0Integration:
             
             # 检查结果是否有效
             if isinstance(result, dict) and result.get('results') and len(result['results']) > 0:
-                logger.info(f"记忆添加成功，提取了 {len(result['results'])} 条记忆")
+                logger.info(f"{self.user_id} 记忆添加成功，提取了 {len(result['results'])} 条记忆")
                 return True
             else:
-                logger.warning("记忆添加返回空结果")
+                logger.warning(f"{self.user_id} 记忆添加返回空结果")
                 return False
             
         except Exception as e:
-            logger.error(f"添加记忆失败: {str(e)}")
+            logger.error(f"{self.user_id} 添加记忆失败: {str(e)}")
             return False
     
     def search_memories(self, query: str, limit: int = 5) -> List[Dict]:
