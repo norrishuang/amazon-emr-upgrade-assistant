@@ -1,6 +1,6 @@
 # Amazon EMR 版本升级助手
 
-基于 AI 和 OpenSearch MCP Server 的智能 EMR 升级助手，帮助用户解决 Amazon EMR 版本升级过程中的各种问题。
+基于 AI、OpenSearch MCP Server 和互联网搜索的智能 EMR 升级助手，帮助用户解决 Amazon EMR 版本升级过程中的各种问题。
 
 ## 🌟 功能特性
 
@@ -11,36 +11,47 @@
 - 🛠️ **组件兼容性**: 分析 Hive、Spark、Flink、HBase 等组件的兼容性
 - 💻 **Web 界面**: 用户友好的聊天界面
 - 🔍 **智能检索**: 基于语义搜索和关键词搜索的混合检索
+- 🌐 **互联网搜索**: 通过 langgraph-crawler 获取最新的 EMR 相关信息
+- ⚡ **异步处理**: 基于 Quart 的异步处理，提高响应速度和并发能力
 
 ## 🏗️ 架构组件
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Web Frontend  │───▶│  Flask App      │───▶│ EMR Agent       │
-│   (Chat UI)     │    │  (Web Server)   │    │ (Claude + MCP)  │
+│   Web Frontend  │───▶│   Quart App     │───▶│ EMR Agent       │
+│   (Chat UI)     │    │  (Async Server) │    │ (Claude 4 + MCP)│
 └─────────────────┘    └─────────────────┘    └─────────────────┘
                             │                          │
                             │                          ▼
                             │                 ┌─────────────────┐
-                            │                 │   MCP Server    │───┐
-                            │                 │ (search_context)│   │
-                            │                 └─────────────────┘   │
-                            │                                       ▼
-                            ▼                                ┌─────────────────┐
-                     ┌─────────────────┐                     │   OpenSearch    │
-                     │   Mem0 Memory   │◀────────────────────│  (Knowledge DB) │
-                     │   (User Context)│                     └─────────────────┘
+                            │                 │   MCP Servers   │───┬───────┐
+                            │                 │                 │   │       │
+                            │                 └─────────────────┘   │       │
+                            │                     │                 │       │
+                            │                     ▼                 ▼       ▼
+                            │            ┌─────────────────┐ ┌─────────┐ ┌─────────┐
+                            │            │   OpenSearch    │ │ Internet│ │ Other   │
+                            │            │  (Knowledge DB) │ │ Search  │ │ Tools   │
+                            │            └─────────────────┘ └─────────┘ └─────────┘
+                            │                     │
+                            ▼                     │
+                     ┌─────────────────┐          │
+                     │   Mem0 Memory   │◀─────────┘
+                     │   (User Context)│
                      └─────────────────┘
 ```
 
 ### 核心组件说明
 
 1. **Web Frontend**: 用户友好的聊天界面，支持显示工具使用情况和知识库内容
-2. **Flask App**: Web 服务器，处理 HTTP 请求和会话管理
-3. **EMR Agent**: 基于 Anthropic Claude 的智能 AI 代理，通过 MCP 协议调用工具
-4. **MCP Server**: 你已实现的 OpenSearch 连接服务，提供 `search_context` 工具
+2. **Quart App**: 异步 Web 服务器，处理 HTTP 请求和会话管理，支持流式响应
+3. **EMR Agent**: 基于 Anthropic Claude 4.0 的智能 AI 代理，通过 MCP 协议调用工具
+4. **MCP Servers**: 
+   - 主 MCP 服务器: 提供 `search_context` 工具，连接 OpenSearch 知识库
+   - langgraph-crawler MCP 服务器: 提供互联网搜索和网页抓取功能
 5. **OpenSearch**: 存储 EMR 升级知识库的搜索引擎，支持混合搜索
-6. **Mem0 Memory**: 基于 OpenSearch 的上下文记忆系统，存储用户对话历史并提供个性化体验
+6. **Internet Search**: 通过 langgraph-crawler 获取最新的 EMR 相关信息
+7. **Mem0 Memory**: 基于 OpenSearch 的上下文记忆系统，存储用户对话历史并提供个性化体验
 
 ## 🚀 快速开始
 
@@ -48,8 +59,9 @@
 
 - Python 3.10+
 - Strands Agents SDK API Key
-- AWS 账户（用于 OpenSearch 和 Secrets Manager）
+- AWS 账户（用于 OpenSearch、Bedrock 和 Secrets Manager）
 - OpenSearch 集群（已配置 EMR 知识库）
+- Node.js（用于 langgraph-crawler MCP 服务器）
 
 ### ⚠️ 重要提示
 
@@ -107,17 +119,18 @@ MEM0_OPENSEARCH_VERIFY_CERTS=true
 MEM0_OPENSEARCH_INDEX=emr_assistant_memories
 ```
 
-### 3. 启动服务
+
+### 4. 启动服务
 
 ```bash
 # 使用启动脚本（推荐）
 ./start.sh
 
 # 或直接运行
-python app.py
+hypercorn app:app --bind 0.0.0.0:5001
 ```
 
-### 4. 访问应用
+### 5. 访问应用
 
 打开浏览器访问：`http://localhost:5001`
 
@@ -126,8 +139,8 @@ python app.py
 ### 基本使用
 
 1. 在聊天界面输入您的 EMR 升级相关问题
-2. AI 助手会自动搜索知识库并生成专业回答
-3. 可以查看相关的知识库内容作为参考
+2. AI 助手会自动搜索知识库和互联网，并生成专业回答
+3. 可以查看相关的知识库内容和互联网搜索结果作为参考
 
 ### 示例查询
 
@@ -143,6 +156,11 @@ python app.py
 **故障排除：**
 - "EMR 升级后 Spark 作业失败如何解决？"
 - "Hive 元数据迁移的最佳实践"
+
+**最新信息查询：**
+- "最新的 EMR 版本有哪些新功能？"
+- "AWS 最近发布的 EMR 相关服务有哪些？"
+- "EMR Serverless 的最新特性是什么？"
 
 ## 🔧 配置说明
 
@@ -259,7 +277,7 @@ EMR Agent 可以使用以下工具来访问记忆系统:
 
 ```
 emr_upgrade_assistant/
-├── app.py              # 主应用文件
+├── app.py              # 主应用文件 (Quart 异步应用)
 ├── mem0_integration.py # Mem0 记忆系统集成
 ├── mem0_tools.py       # Mem0 工具集
 ├── requirements.txt    # Python 依赖
@@ -275,7 +293,39 @@ emr_upgrade_assistant/
 
 1. **添加新的搜索功能**: 修改 `mcp_client.py` 中的搜索逻辑
 2. **自定义 UI**: 编辑 `templates/index.html` 和 `static/style.css`
-3. **集成其他 LLM**: 修改 `app.py` 中的 `call_llm` 方法
+3. **集成其他 LLM**: 修改 `app.py` 中的 Agent 初始化部分
+4. **添加新的 MCP 工具**: 在 `.kiro/settings/mcp.json` 中配置新的 MCP 服务器
+
+## ⚡ 异步处理与流式响应
+
+本项目使用 Quart 框架实现异步处理，相比传统的 Flask 应用有以下优势：
+
+1. **并发处理**: 能够同时处理多个请求，提高系统吞吐量
+2. **流式响应**: 支持 Server-Sent Events (SSE)，实现实时流式输出
+3. **长时间运行任务**: 更好地处理需要较长时间的操作，如复杂查询和互联网搜索
+4. **资源利用**: 更高效地利用系统资源，减少阻塞
+
+### 流式响应实现
+
+系统使用 Server-Sent Events (SSE) 技术实现流式响应，主要优势包括：
+
+- **实时反馈**: 用户无需等待完整响应，可以看到 AI 思考和生成的过程
+- **更好的用户体验**: 减少等待时间，提供类似人类对话的体验
+- **长连接支持**: 适合处理需要较长时间的复杂查询
+
+## 🌐 互联网搜索集成
+
+系统集成了 langgraph-crawler MCP 服务器，提供两个主要工具：
+
+1. **web_search_tool**: 在互联网上搜索相关信息
+2. **crawl_tool**: 抓取特定网页的内容
+
+这些工具使 EMR 升级助手能够：
+
+- 获取最新的 EMR 版本信息和特性
+- 查找官方文档和最佳实践
+- 补充本地知识库中没有的信息
+- 提供更全面、更新的回答
 
 ## 📝 许可证
 
