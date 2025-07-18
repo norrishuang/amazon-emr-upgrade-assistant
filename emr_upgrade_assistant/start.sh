@@ -54,4 +54,5 @@ echo "按 Ctrl+C 停止服务"
 echo ""
 
 # python app.py
+export LOG_LEVEL=DEBUG
 hypercorn app:app --bind 0.0.0.0:5001

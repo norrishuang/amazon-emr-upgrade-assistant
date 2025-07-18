@@ -2,12 +2,49 @@
 Mem0 集成模块 - 实现上下文记忆存储和查询
 """
 
-import os
+import os, sys
 import json
 import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
+
+# 创建日志目录
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# 配置日志记录器
+def setup_logger():
+    logger = logging.getLogger('emr_assistant')
+    logger.setLevel(logging.DEBUG)
+    
+    # 创建格式化器
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # 创建文件处理器（带滚动）
+    file_handler = RotatingFileHandler(
+        filename=os.path.join(log_dir, 'emr_assistant.log'),
+        maxBytes=100*1024*1024,  # 100MB
+        backupCount=30,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    return logger
+
+# 初始化日志记录器
+logger = setup_logger()
 
 # 确保加载环境变量
 load_dotenv()
@@ -21,7 +58,7 @@ except ImportError:
     Memory = None
     OpenSearch = None
 
-logger = logging.getLogger(__name__)
+# logger = logging.getLogger(__name__)
 
 
 class Mem0Integration:
@@ -146,10 +183,10 @@ class Mem0Integration:
             
             # 检查结果是否有效
             if isinstance(result, dict) and result.get('results') and len(result['results']) > 0:
-                logger.info(f"{self.user_id} 记忆添加成功，提取了 {len(result['results'])} 条记忆")
+                print(f"{self.user_id} 记忆添加成功，提取了 {len(result['results'])} 条记忆")
                 return True
             else:
-                logger.warning(f"{self.user_id} 记忆添加返回空结果")
+                print(f"{self.user_id} 记忆添加返回空结果")
                 return False
             
         except Exception as e:

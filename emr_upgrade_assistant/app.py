@@ -1,11 +1,13 @@
-from quart import Quart, render_template, request, jsonify, Response
-import os
+from quart import Quart, render_template, request, jsonify, Response, session
+import os, sys
 import json
 import asyncio
 from typing import Dict, Any
 from dotenv import load_dotenv
 import uuid
 from datetime import datetime
+import logging
+from logging.handlers import RotatingFileHandler
 
 # 根据官方文档导入 Strands Agents 和 MCP 相关模块
 from mcp import stdio_client, StdioServerParameters
@@ -15,6 +17,42 @@ from mem0_integration import create_mem0_integration
 from mem0_tools import mem0_tools
 from strands.models import BedrockModel
 
+# 创建日志目录
+log_dir = 'logs'
+if not os.path.exists(log_dir):
+    os.makedirs(log_dir)
+
+# 配置日志记录器
+def setup_logger():
+    logger = logging.getLogger('emr_assistant')
+    logger.setLevel(logging.DEBUG)
+    
+    # 创建格式化器
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    
+    # 创建文件处理器（带滚动）
+    file_handler = RotatingFileHandler(
+        filename=os.path.join(log_dir, 'emr_assistant.log'),
+        maxBytes=100*1024*1024,  # 100MB
+        backupCount=30,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    return logger
+
+# 初始化日志记录器
+logger = setup_logger()
+
 load_dotenv()
 
 app = Quart(__name__)
@@ -23,6 +61,8 @@ app.secret_key = os.getenv('SECRET_KEY', 'emr-upgrade-assistant-secret-key')
 # 禁用 Quart 的缓冲，确保流式响应立即发送
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.config['RESPONSE_TIMEOUT'] = 300  # 增加响应超时时间到300秒
+app.config['BODY_TIMEOUT'] = 300  # 增加请求体超时时间到300秒
 
 class EMRUpgradeAssistant:
     """Amazon EMR 版本升级助手 - 基于 Strands Agents"""
@@ -32,7 +72,7 @@ class EMRUpgradeAssistant:
             # 不在初始化时创建 mem0 实例，而是在每次请求时创建
             self.mem0 = None
             
-            print("🚀 开始初始化 EMR 升级助手...")
+            logger.info("🚀 开始初始化 EMR 升级助手...")
             
             # 根据官方文档配置 MCP 客户端
             # 参考: https://strandsagents.com/latest/user-guide/concepts/tools/mcp-tools/
@@ -41,8 +81,8 @@ class EMRUpgradeAssistant:
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
             mcp_server_dir = os.path.join(project_root, 'mcp_server')
             
-            # 根据你提供的配置，使用 uv 命令创建 MCP 客户端
-            # 配置格式: {"mcpServers": {"opensearch_mcp_server": {"command": "uv","args": ["--directory","/path/to/mcp_server","run","app.py"]}}}
+            # 创建多个 MCP 客户端
+            # 1. 主 MCP 服务器
             self.mcp_client = MCPClient(lambda: stdio_client(
                 StdioServerParameters(
                     command="uv",
@@ -50,23 +90,31 @@ class EMRUpgradeAssistant:
                 )
             ))
             
-            print("✅ MCP 客户端初始化成功")
-            print(f"📡 MCP Server 目录: {mcp_server_dir}")
+            # 2. langgraph-crawler MCP 服务器 - 用于网页搜索和内容抓取
+            self.langgraph_crawler_client = MCPClient(lambda: stdio_client(
+                StdioServerParameters(
+                    command="npx",
+                    args=["-y", "@langgraph-js/crawler-mcp@latest"]
+                )
+            ))
+            
+            logger.info("✅ MCP 客户端初始化成功")
+            logger.debug(f"📡 MCP Server 目录: {mcp_server_dir}")
             
             # 注意：根据官方文档，Agent 必须在 MCP 客户端的上下文管理器中创建和使用
             self.agent = None  # 将在 process_query 中创建
             
-            print("🚀 EMR 升级助手 (Strands Agents) 初始化完成")
+            logger.info("🚀 EMR 升级助手 (Strands Agents) 初始化完成")
             
         except ImportError as e:
-            print(f"❌ Strands Agents 导入失败: {str(e)}")
-            print("请确保已正确安装 Strands Agents:")
-            print("pip install strands-agents")
-            print("pip install strands-agents-tools")
-            print("pip install strands-agents-builder")
+            logger.error(f"❌ Strands Agents 导入失败: {str(e)}")
+            logger.error("请确保已正确安装 Strands Agents:")
+            logger.error("pip install strands-agents")
+            logger.error("pip install strands-agents-tools")
+            logger.error("pip install strands-agents-builder")
             self.agent = None
         except Exception as e:
-            print(f"❌ Agent 初始化失败: {str(e)}")
+            logger.error(f"❌ Agent 初始化失败: {str(e)}")
             self.agent = None
     
     def _get_instructions(self) -> str:
@@ -87,7 +135,12 @@ class EMRUpgradeAssistant:
 - 使用中文回答
 - 结构化回答，使用标题和要点
 
-当用户询问 EMR 升级相关问题时，请先使用 search_context 工具检索相关信息，然后基于检索结果提供专业的回答。
+当用户询问 EMR 升级相关问题时：
+1. 如果需要最新的信息，请使用 mcp_langgraph_crawler_web_search_tool 工具搜索互联网上的最新信息
+2. 如果需要查看特定网页的内容，请使用 mcp_langgraph_crawler_crawl_tool 工具抓取网页内容
+3. 如果需要本地知识库信息，请使用 search_context 工具检索相关信息
+
+然后基于检索结果提供专业的回答。
 
 回答格式建议：
 ## 问题分析
@@ -158,7 +211,7 @@ class EMRUpgradeAssistant:
         import re
         import time
         
-        print(f"📝 开始模拟流式输出，内容长度: {len(text)}")
+        logger.debug(f"📝 开始模拟流式输出，内容长度: {len(text)}")
         
         # 按词语和标点符号分割，但是以更大的块为单位
         # 这样可以看到流式效果，但不会太慢
@@ -203,13 +256,13 @@ class EMRUpgradeAssistant:
         简化版流式处理 - 用于调试
         """
         try:
-            print(f"🔧 [简化版] 开始处理查询: {user_query}")
-            print(f"🔧 [简化版] MCP Client 状态: {self.mcp_client is not None}")
+            logger.debug(f"🔧 [简化版] 开始处理查询: {user_query}")
+            logger.debug(f"🔧 [简化版] MCP Client 状态: {self.mcp_client is not None}")
             
             # 直接返回一个测试响应
             test_response = f"收到您的问题：{user_query}\n\n这是一个测试响应，用于验证流式输出是否正常工作。"
             
-            print(f"🔧 [简化版] 开始模拟流式输出，内容长度: {len(test_response)}")
+            logger.debug(f"🔧 [简化版] 开始模拟流式输出，内容长度: {len(test_response)}")
             
             # 模拟流式输出
             chunk_count = 0
@@ -218,7 +271,7 @@ class EMRUpgradeAssistant:
                 print(f"🔧 [简化版] 生成第 {chunk_count} 个数据块: {chunk}")
                 yield chunk
             
-            print(f"✅ [简化版] 流式输出完成，共生成 {chunk_count} 个数据块")
+            logger.debug(f"✅ [简化版] 流式输出完成，共生成 {chunk_count} 个数据块")
                 
         except Exception as e:
             print(f"❌ [简化版] 处理失败: {str(e)}")
@@ -244,31 +297,47 @@ class EMRUpgradeAssistant:
             return
 
         try:
-            print(f"📝 开始流式处理用户查询: {user_query}")
+            logger.debug(f"📝 开始流式处理用户查询: {user_query}")
+            
+            # 获取主MCP服务器的工具
             with self.mcp_client:
                 mcp_tools = self.mcp_client.list_tools_sync()
-                all_tools = mcp_tools + mem0_tools
-                print(f"🔧 获取到 {len(mcp_tools)} 个 MCP 工具，{len(mem0_tools)} 个 mem0 工具")
+                logger.debug(f"🔧 获取到 {len(mcp_tools)} 个主MCP工具")
+            
+            # 获取langgraph-crawler MCP服务器的工具
+            crawler_tools = []
+            try:
+                with self.langgraph_crawler_client:
+                    crawler_tools = self.langgraph_crawler_client.list_tools_sync()
+                    logger.debug(f"🔧 获取到 {len(crawler_tools)} 个langgraph-crawler工具")
+            except Exception as crawler_error:
+                logger.error(f"⚠️ 获取langgraph-crawler工具失败: {str(crawler_error)}")
+            
+            # 合并所有工具
+            all_tools = mcp_tools + mem0_tools + crawler_tools
+            logger.debug(f"🔧 总共获取到 {len(all_tools)} 个工具: {len(mcp_tools)}个主MCP工具 + {len(mem0_tools)}个mem0工具 + {len(crawler_tools)}个crawler工具")
+            
+            # 使用主MCP客户端的上下文管理器
+            with self.mcp_client:
                 try:
                     bedrock_model = BedrockModel(
-                        model_id="us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
                         region_name="us-east-1",
                         temperature=0.3,
                     )
                     agent = Agent(
                         tools=all_tools,
-                        callback_handler=None,
-                        model=bedrock_model
+                        callback_handler=None
                     )
-                    print("✅ 成功创建使用 Claude 4.0 Sonnet 的 Agent")
+                    logger.debug("✅ 成功创建使用 Agent")
                 except Exception as model_error:
-                    print(f"⚠️ 使用 Claude 4.0 Sonnet 创建 Agent 失败: {str(model_error)}")
-                    print("尝试使用默认模型创建 Agent")
+                    logger.error(f"⚠️ 使用 Claude 4.0 Sonnet 创建 Agent 失败: {str(model_error)}")
+                    logger.error("尝试使用默认模型创建 Agent")
                     agent = Agent(tools=all_tools, callback_handler=None)
                 if hasattr(agent, 'model') and hasattr(agent.model, 'config'):
-                    print(f"🔧 使用模型配置: {agent.model.config}")
+                    logger.debug(f"🔧 使用模型配置: {agent.model.config}")
                 else:
-                    print("⚠️ 无法获取模型配置信息")
+                    logger.warn("⚠️ 无法获取模型配置信息")
                 user_mem0 = create_mem0_integration(user_id)
                 from mem0_tools import set_current_user_mem0
                 set_current_user_mem0(user_mem0)
@@ -276,47 +345,121 @@ class EMRUpgradeAssistant:
                 system_instructions = self._get_instructions()
                 if historical_context:
                     full_query = f"{system_instructions}\n\n{historical_context}\n\n用户问题: {user_query}"
-                    print(f"📚 添加了历史上下文，长度: {len(historical_context)}")
+                    logger.debug(f"📚 添加了历史上下文，长度: {len(historical_context)}")
                 else:
                     full_query = f"{system_instructions}\n\n用户问题: {user_query}"
-                print(f"🔧 开始 Strands Agent 流式调用...")
+                logger.debug(f"🔧 开始 Strands Agent 流式调用...")
                 accumulated_response = ""
                 async def async_stream():
                     nonlocal accumulated_response
                     try:
-                        async for event in agent.stream_async(full_query):
-                            # 注释掉 MCP Server 查询返回的日志打印
-                            # print("Agent event:", event)  # 打印所有 event
-                            # LLM 内容流式返回
-                            if "data" in event:
-                                content = event["data"]
-                                if content:
-                                    accumulated_response += content
-                                    print(f"📝 LLM流式内容: {content}")
+                        # 设置超时时间（秒）
+                        timeout_seconds = 240  # 增加到240秒
+                        
+                        # 获取流式响应迭代器
+                        stream_iterator = agent.stream_async(full_query)
+                        
+                        # 初始化心跳计数器
+                        heartbeat_counter = 0
+                        last_heartbeat_time = datetime.now()
+                        
+                        # 处理流式响应
+                        while True:
+                            # 每5秒发送一次心跳，保持连接活跃
+                            current_time = datetime.now()
+                            if (current_time - last_heartbeat_time).total_seconds() >= 5:
+                                yield {
+                                    "type": "heartbeat",
+                                    "timestamp": current_time.isoformat()
+                                }
+                                last_heartbeat_time = current_time
+                                heartbeat_counter += 1
+                            
+                            # 等待流式响应或超时
+                            try:
+                                # 使用asyncio.wait_for设置超时，但增加超时时间
+                                event = await asyncio.wait_for(stream_iterator.__anext__(), timeout=10.0)
+                                
+                                # 处理事件
+                                # LLM 内容流式返回
+                                if "data" in event:
+                                    content = event["data"]
+                                    if content:
+                                        accumulated_response += content
+                                        logger.debug(f"📝 LLM流式内容: {content}")
+                                        yield {
+                                            "type": "content",
+                                            "content": content,
+                                            "accumulated": accumulated_response,
+                                            "timestamp": datetime.now().isoformat()
+                                        }
+                                
+                                # 工具调用事件
+                                if "current_tool_use" in event and event["current_tool_use"].get("name"):
+                                    tool_name = event["current_tool_use"]["name"]
+                                    tool_input = event["current_tool_use"].get("input", {})
+                                    logger.debug(f"🔧 工具调用: {tool_name}, 输入: {tool_input}")
+                                    
+                                    # 对网络搜索工具添加特殊处理
+                                    if "web_search" in tool_name.lower() or "crawl" in tool_name.lower():
+                                        yield {
+                                            "type": "status",
+                                            "message": f"[正在搜索网络信息: {tool_input.get('query', '')}]",
+                                            "timestamp": datetime.now().isoformat()
+                                        }
+                                    else:
+                                        yield {
+                                            "type": "status",
+                                            "message": f"[使用工具: {tool_name}]",
+                                            "timestamp": datetime.now().isoformat()
+                                        }
+                                
+                                # MCP Server 工具返回内容
+                                if "tool_response" in event and event["tool_response"]:
+                                    tool_name = event.get("current_tool_use", {}).get("name", "未知工具")
+                                    logger.debug(f"🟢 工具 {tool_name} 返回结果")
+                                    
+                                    # 对于网络搜索工具，通知前端搜索完成
+                                    if "web_search" in tool_name.lower() or "crawl" in tool_name.lower():
+                                        yield {
+                                            "type": "status",
+                                            "message": f"[网络搜索完成，正在分析结果]",
+                                            "timestamp": datetime.now().isoformat()
+                                        }
+                                
+                            except StopAsyncIteration:
+                                # 流结束
+                                logger.debug("✅ 流式响应完成")
+                                break
+                                
+                            except asyncio.TimeoutError:
+                                # 超时但不中断流程，继续等待
+                                logger.debug(f"⏱️ 等待流式响应中... ({heartbeat_counter * 10}秒)")
+                                
+                                # 如果超过总超时时间，发送状态消息但不中断
+                                if heartbeat_counter * 10 > timeout_seconds:
+                                    logger.warning(f"⚠️ 流式响应处理时间较长 ({timeout_seconds}秒)")
                                     yield {
-                                        "type": "content",
-                                        "content": content,
-                                        "accumulated": accumulated_response,
+                                        "type": "status",
+                                        "message": f"[处理时间较长，可能是网络搜索或分析复杂问题导致，请耐心等待...]",
                                         "timestamp": datetime.now().isoformat()
                                     }
-                            # 工具调用事件
-                            if "current_tool_use" in event and event["current_tool_use"].get("name"):
-                                tool_name = event["current_tool_use"]["name"]
-                                print(f"🔧 工具调用: {tool_name}")
+                            
+                            except Exception as event_error:
+                                # 处理单个事件的错误，但不中断整个流程
+                                logger.error(f"❌ 处理事件时出错: {str(event_error)}")
                                 yield {
                                     "type": "status",
-                                    "message": f"[使用工具: {tool_name}]",
+                                    "message": f"[处理过程中遇到问题，但仍在继续...]",
                                     "timestamp": datetime.now().isoformat()
                                 }
-                            # MCP Server 工具返回内容 - 关闭日志打印
-                            if "tool_response" in event and event["tool_response"]:
-                                # print(f"🟢 MCP Server 工具返回内容: {event['tool_response']}")
-                                pass
                     except Exception as e:
-                        print(f"❌ 异步流式调用失败: {str(e)}")
+                        logger.error(f"❌ 异步流式调用失败: {str(e)}")
+                        import traceback
+                        logger.error(f"错误堆栈: {traceback.format_exc()}")
                         yield {
                             "type": "error",
-                            "error": str(e),
+                            "error": f"处理查询时出错: {str(e)}",
                             "timestamp": datetime.now().isoformat()
                         }
                 async for chunk in async_stream():
@@ -332,11 +475,11 @@ class EMRUpgradeAssistant:
                                 "response_length": len(accumulated_response)
                             }
                         )
-                        print("💾 对话记忆已保存到 mem0")
+                        logger.debug(f"💾 对话记忆已保存到 mem0 {user_id}")
                     except Exception as mem_error:
-                        print(f"⚠️ 保存记忆失败: {str(mem_error)}")
+                        logger.error(f"⚠️ 保存记忆失败: {str(mem_error)}")
         except Exception as e:
-            print(f"❌ 流式处理查询时出错: {str(e)}")
+            logger.error(f"❌ 流式处理查询时出错: {str(e)}")
             yield {
                 "type": "error",
                 "error": f"处理查询时出错: {str(e)}",
@@ -362,13 +505,13 @@ class EMRUpgradeAssistant:
             }
         
         try:
-            print(f"📝 处理用户查询: {user_query}")
+            logger.info(f"📝 处理用户查询: {user_query}")
             
             # 根据官方文档，必须在 MCP 客户端的上下文管理器中使用 Agent
             with self.mcp_client:
                 # 获取 MCP 服务器提供的工具
                 tools = self.mcp_client.list_tools_sync()
-                print(f"🔧 获取到 {len(tools)} 个 MCP 工具")
+                logger.debug(f"🔧 获取到 {len(tools)} 个 MCP 工具")
                 
                 # 在上下文管理器中创建 Agent
                 # 根据 Strands Agents API，Agent 初始化不接受 instructions 参数
@@ -381,7 +524,7 @@ class EMRUpgradeAssistant:
                 # 使用 Agent 处理查询
                 response = agent(full_query)
                 
-                print("✅ Strands Agent 处理完成")
+                logger.debug("✅ Strands Agent 处理完成")
                 
                 # 根据官方文档，响应格式可能是字符串或对象
                 if isinstance(response, str):
@@ -400,7 +543,7 @@ class EMRUpgradeAssistant:
                 }
             
         except Exception as e:
-            print(f"❌ 处理查询时出错: {str(e)}")
+            logger.error(f"❌ 处理查询时出错: {str(e)}")
             return {
                 "success": False,
                 "error": f"处理查询时出错: {str(e)}",
@@ -412,7 +555,14 @@ emr_assistant = EMRUpgradeAssistant()
 
 @app.route('/')
 async def index():
-    """主页"""
+    """主页 - 生成并存储用户ID"""
+    # 检查会话中是否已有用户ID，如果没有则创建一个新的
+    if 'user_id' not in session:
+        session['user_id'] = str(uuid.uuid4())
+        logger.info(f"创建新的用户会话ID: {session['user_id']}")
+    else:
+        logger.info(f"使用现有用户会话ID: {session['user_id']}")
+    
     return await render_template('index.html')
 
 @app.route('/chat', methods=['POST'])
@@ -428,9 +578,14 @@ async def chat_stream():
                 'error': '请输入您的问题'
             }), 400
         
-        # 临时去掉 session，直接用随机 user_id
-        import uuid
-        user_id = str(uuid.uuid4())
+        # 从会话中获取用户ID，如果不存在则创建一个新的
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在聊天请求中创建新的用户会话ID: {user_id}")
+        else:
+            logger.debug(f"使用现有用户会话ID: {user_id}")
         
         # 返回流式响应 - 强制实时传输，添加填充数据
         async def generate_stream():
@@ -441,7 +596,7 @@ async def chat_stream():
             os.environ['PYTHONUNBUFFERED'] = '1'
             
             try:
-                print("🔄 开始生成流式响应...")
+                logger.debug("🔄 开始生成流式响应...")
                 
                 # 立即发送心跳和填充数据，强制建立连接
                 heartbeat = json.dumps({'type': 'heartbeat'})
@@ -451,7 +606,7 @@ async def chat_stream():
                 padding = " " * 1024  # 1KB 填充数据
                 yield f": padding {padding}\n\n"
                 
-                print("📡 心跳和填充数据已发送，开始处理查询...")
+                logger.debug("📡 心跳和填充数据已发送，开始处理查询...")
                 
                 # 先发送一个初始内容，确保前端能立即显示
                 initial_content = {
@@ -467,7 +622,7 @@ async def chat_stream():
                 chunk_count = 0
                 async for chunk in emr_assistant.process_query_stream(user_query, user_id):
                     chunk_count += 1
-                    print(f"生成第 {chunk_count} 个数据块: {chunk}")
+                    logger.debug(f"生成第 {chunk_count} 个数据块: {chunk}")
                     
                     # 确保 JSON 序列化不会失败
                     try:
@@ -500,17 +655,26 @@ async def chat_stream():
                 
             except Exception as e:
                 import traceback
-                print(f"❌ 流式响应错误: {str(e)}")
+                logger.error(f"❌ 流式响应错误: {str(e)}")
                 print(f"错误堆栈: {traceback.format_exc()}")
                 error_data = json.dumps({'type': 'error', 'error': str(e)})
                 yield f"data: {error_data}\n\n"
         
-        return Response(generate_stream(), content_type='text/event-stream')
+        return Response(
+            generate_stream(), 
+            content_type='text/event-stream',
+            headers={
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Connection': 'keep-alive',
+                'X-Accel-Buffering': 'no',  # 禁用Nginx缓冲
+                'Transfer-Encoding': 'chunked'  # 使用分块传输编码
+            }
+        )
         
     except Exception as e:
         import traceback
-        print(f"❌ 处理聊天请求失败: {str(e)}")
-        print(f"错误堆栈: {traceback.format_exc()}")
+        logger.error(f"❌ 处理聊天请求失败: {str(e)}")
+        logger.error(f"错误堆栈: {traceback.format_exc()}")
         return jsonify({
             'success': False,
             'error': f'服务器错误: {str(e)}'
@@ -529,8 +693,14 @@ async def chat_sync():
                 'error': '请输入您的问题'
             }), 400
         
-        # 获取或创建用户会话ID
-        user_id = str(uuid.uuid4())
+        # 从会话中获取用户ID，如果不存在则创建一个新的
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在chat-sync请求中创建新的用户会话ID: {user_id}")
+        else:
+            logger.debug(f"使用现有用户会话ID: {user_id}")
         
         # 处理查询
         result = await emr_assistant.process_query(user_query, user_id)
@@ -547,8 +717,14 @@ async def chat_sync():
 async def memory_stats():
     """获取记忆统计信息"""
     try:
-        # 获取或创建用户会话ID
-        user_id = str(uuid.uuid4())
+        # 从会话中获取用户ID，如果不存在则创建一个新的
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在memory/stats请求中创建新的用户会话ID: {user_id}")
+        else:
+            logger.debug(f"使用现有用户会话ID: {user_id}")
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -579,8 +755,14 @@ async def search_memories():
                 'error': '请输入搜索查询'
             }), 400
         
-        # 获取或创建用户会话ID
-        user_id = str(uuid.uuid4())
+        # 从会话中获取用户ID，如果不存在则创建一个新的
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在memory/search请求中创建新的用户会话ID: {user_id}")
+        else:
+            logger.debug(f"使用现有用户会话ID: {user_id}")
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -606,8 +788,14 @@ async def get_recent_memories():
     try:
         limit = int(request.args.get('limit', 10))
         
-        # 获取或创建用户会话ID
-        user_id = str(uuid.uuid4())
+        # 从会话中获取用户ID，如果不存在则创建一个新的
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在memory/recent请求中创建新的用户会话ID: {user_id}")
+        else:
+            logger.debug(f"使用现有用户会话ID: {user_id}")
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -630,8 +818,14 @@ async def get_recent_memories():
 async def clear_memories():
     """清除所有记忆"""
     try:
-        # 获取或创建用户会话ID
-        user_id = str(uuid.uuid4())
+        # 从会话中获取用户ID，如果不存在则创建一个新的
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在memory/clear请求中创建新的用户会话ID: {user_id}")
+        else:
+            logger.debug(f"使用现有用户会话ID: {user_id}")
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -655,29 +849,7 @@ async def clear_memories():
             'error': f'清除记忆失败: {str(e)}'
         }), 500
 
-@app.route('/test-stream')
-async def test_stream():
-    """测试流式响应 - 最简单的版本"""
-    async def generate_test_stream():
-        import asyncio
-        yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-        test_messages = [
-            "这是第一条测试消息",
-            "这是第二条测试消息",
-            "这是第三条测试消息",
-            "流式响应测试完成！"
-        ]
-        for i, msg in enumerate(test_messages):
-            chunk_data = {
-                "type": "content",
-                "content": msg,
-                "accumulated": " ".join(test_messages[:i+1]),
-                "timestamp": datetime.now().isoformat()
-            }
-            yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-            await asyncio.sleep(0.5)
-        yield f"data: {json.dumps({'type': 'end'})}\n\n"
-    return Response(generate_test_stream(), content_type='text/event-stream')
+# 测试流式响应路由已移除
 
 @app.route('/health')
 async def health():
@@ -706,5 +878,5 @@ async def internal_error(error):
 
 # 启动方式提示
 if __name__ == '__main__':
-    print('请使用 hypercorn 启动此应用，例如:')
-    print('hypercorn emr_upgrade_assistant.app:app --bind 0.0.0.0:5001')
+    logger.info('请使用 hypercorn 启动此应用，例如:')
+    logger.info('hypercorn emr_upgrade_assistant.app:app --bind 0.0.0.0:5001')

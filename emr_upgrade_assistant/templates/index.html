@@ -127,9 +127,6 @@
                     <p class="text-gray-600">基于 AI 的智能 EMR 升级指导，帮您解决版本升级中的各种问题</p>
                 </div>
                 <div class="flex flex-col space-y-2">
-                    <button id="testStreamBtn" class="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600 transition-colors">
-                        🧪 测试流式
-                    </button>
                     <button id="memoryStatsBtn" class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 transition-colors">
                         📊 记忆统计
                     </button>
@@ -235,9 +232,13 @@
                     headers: {
                         'Content-Type': 'application/json',
                         'Cache-Control': 'no-cache',
-                        'X-Requested-With': 'XMLHttpRequest'
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Connection': 'keep-alive',
+                        'Accept': 'text/event-stream'
                     },
-                    body: JSON.stringify({ query: message })
+                    body: JSON.stringify({ query: message }),
+                    // 增加超时设置
+                    signal: AbortSignal.timeout(300000) // 5分钟超时
                 });
 
                 if (!response.ok) {
@@ -253,56 +254,130 @@
                 let accumulatedContent = '';
                 let receivedDataCount = 0;
 
-                while (true) {
-                    const { done, value } = await reader.read();
-                    
-                    if (done) {
-                        console.log('流数据读取完成');
-                        break;
+                // 设置超时处理
+                const timeout = setTimeout(() => {
+                    console.warn('流式响应超时，可能是网络问题或服务器处理时间过长');
+                    const statusArea = assistantMessageDiv.querySelector('.status-area');
+                    if (statusArea) {
+                        statusArea.innerHTML = `<span class="text-yellow-600">⚠️ 响应时间较长，正在努力处理中...</span>`;
+                        statusArea.style.display = 'block';
                     }
+                }, 30000); // 30秒超时
+                
+                try {
+                    // 添加重试计数器
+                    let retryCount = 0;
+                    const maxRetries = 3;
                     
-                    // 解码二进制数据
-                    const chunk = decoder.decode(value, { stream: true });
-                    console.log('收到数据块:', chunk);
-                    buffer += chunk;
-                    
-                    // 处理完整的 SSE 消息 - 修复分隔符问题
-                    // SSE 消息可能使用 \n\n 或 \r\n\r\n 作为分隔符
-                    const lines = buffer.split(/\r?\n\r?\n/);
-                    buffer = lines.pop() || ''; // 保留不完整的行
-                    
-                    for (const line of lines) {
-                        if (line.trim() && line.startsWith('data: ')) {
-                            try {
-                                const jsonStr = line.slice(6).trim();
-                                if (jsonStr) {
-                                    const data = JSON.parse(jsonStr);
-                                    receivedDataCount++;
-                                    console.log(`处理第 ${receivedDataCount} 条流数据:`, data);
-                                    
-                                    // 处理数据
-                                    handleStreamData(data, assistantMessageDiv);
-                                    
-                                    // 更新累积内容
-                                    if (data.type === 'content') {
-                                        if (data.accumulated) {
-                                            accumulatedContent = data.accumulated;
-                                        } else if (data.content) {
-                                            accumulatedContent += data.content;
+                    while (true) {
+                        try {
+                            const { done, value } = await reader.read();
+                            
+                            if (done) {
+                                console.log('流数据读取完成');
+                                break;
+                            }
+                            
+                            // 重置超时计时器和重试计数器
+                            clearTimeout(timeout);
+                            retryCount = 0;
+                            
+                            // 解码二进制数据
+                            const chunk = decoder.decode(value, { stream: true });
+                            console.log('收到数据块:', chunk);
+                            buffer += chunk;
+                        } catch (readError) {
+                            console.error('读取流数据时出错:', readError);
+                            
+                            // 如果是"Error in input stream"错误，尝试重试
+                            if (readError.message.includes('input stream') && retryCount < maxRetries) {
+                                retryCount++;
+                                console.warn(`流读取错误，正在尝试第 ${retryCount} 次重试...`);
+                                await new Promise(resolve => setTimeout(resolve, 1000)); // 等待1秒后重试
+                                continue;
+                            }
+                            
+                            // 超过最大重试次数或其他错误，显示错误信息并中断
+                            const statusArea = assistantMessageDiv.querySelector('.status-area');
+                            if (statusArea) {
+                                statusArea.innerHTML = `<span class="text-red-600">❌ 读取响应时出错: ${readError.message}</span>`;
+                                statusArea.style.display = 'block';
+                            }
+                            break;
+                        }
+                        
+                        // 处理完整的 SSE 消息 - 修复分隔符问题
+                        // SSE 消息可能使用 \n\n 或 \r\n\r\n 作为分隔符
+                        const lines = buffer.split(/\r?\n\r?\n/);
+                        buffer = lines.pop() || ''; // 保留不完整的行
+                        
+                        let hasProcessedData = false;
+                        
+                        for (const line of lines) {
+                            if (line.trim() && line.startsWith('data: ')) {
+                                try {
+                                    const jsonStr = line.slice(6).trim();
+                                    if (jsonStr) {
+                                        const data = JSON.parse(jsonStr);
+                                        receivedDataCount++;
+                                        console.log(`处理第 ${receivedDataCount} 条流数据:`, data);
+                                        
+                                        // 处理数据
+                                        handleStreamData(data, assistantMessageDiv);
+                                        hasProcessedData = true;
+                                        
+                                        // 更新累积内容
+                                        if (data.type === 'content') {
+                                            if (data.accumulated) {
+                                                accumulatedContent = data.accumulated;
+                                            } else if (data.content) {
+                                                accumulatedContent += data.content;
+                                            }
+                                        }
+                                        
+                                        // 如果是结束信号，结束处理
+                                        if (data.type === 'end') {
+                                            console.log('收到结束信号');
+                                            clearTimeout(timeout);
+                                            break;
+                                        }
+                                        
+                                        // 如果是错误信号，显示错误并结束处理
+                                        if (data.type === 'error') {
+                                            console.error('收到错误信号:', data.error);
+                                            clearTimeout(timeout);
+                                            break;
                                         }
                                     }
-                                    
-                                    // 如果是结束信号，结束处理
-                                    if (data.type === 'end') {
-                                        console.log('收到结束信号');
-                                        break;
-                                    }
+                                } catch (e) {
+                                    console.error('解析流数据失败:', e, '原始数据:', line);
+                                    // 尝试恢复处理，不中断流程
                                 }
-                            } catch (e) {
-                                console.error('解析流数据失败:', e, '原始数据:', line);
                             }
                         }
+                        
+                        // 如果没有处理任何数据，可能是格式问题，尝试其他分隔符
+                        if (!hasProcessedData && buffer.length > 5000) {
+                            console.warn('长时间未处理任何数据，尝试重新解析缓冲区');
+                            // 尝试使用其他分隔符重新解析
+                            const alternativeLines = buffer.split('data: ');
+                            for (const line of alternativeLines) {
+                                if (line.trim()) {
+                                    try {
+                                        const jsonStr = line.trim();
+                                        const data = JSON.parse(jsonStr);
+                                        handleStreamData(data, assistantMessageDiv);
+                                    } catch (e) {
+                                        // 忽略解析错误
+                                    }
+                                }
+                            }
+                            // 清空缓冲区，避免重复处理
+                            buffer = '';
+                        }
                     }
+                } finally {
+                    clearTimeout(timeout);
                 }
                 
                 console.log(`流式响应处理完成，共处理 ${receivedDataCount} 条数据`);
@@ -658,64 +733,13 @@
             }
         }
 
-        // 测试流式响应功能
-        async function testStreamResponse() {
-            console.log('🧪 开始测试流式响应...');
-            
-            // 创建助手消息容器
-            const assistantMessageDiv = createAssistantMessageContainer();
-            
-            try {
-                // 调用测试流式响应接口
-                const response = await fetch('/test-stream');
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-                let buffer = '';
-                
-                while (true) {
-                    const { done, value } = await reader.read();
-                    
-                    if (done) break;
-                    
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // 保留不完整的行
-                    
-                    for (const line of lines) {
-                        if (line.trim() && line.startsWith('data: ')) {
-                            try {
-                                const jsonStr = line.slice(6).trim();
-                                if (jsonStr) {
-                                    const data = JSON.parse(jsonStr);
-                                    console.log('🧪 测试流数据:', data);
-                                    handleStreamData(data, assistantMessageDiv);
-                                }
-                            } catch (e) {
-                                console.error('🧪 解析测试流数据失败:', e, '原始数据:', line);
-                            }
-                        }
-                    }
-                }
-                
-                console.log('🧪 测试流式响应完成');
-                
-            } catch (error) {
-                console.error('🧪 测试流式响应失败:', error);
-                addMessage(`❌ 测试流式响应失败: ${error.message}`, 'error');
-            }
-        }
+        // 测试流式响应功能已移除
 
         // 页面加载完成后聚焦输入框并绑定事件
         document.addEventListener('DOMContentLoaded', function () {
             document.getElementById('messageInput').focus();
             
             // 绑定记忆管理按钮事件
-            document.getElementById('testStreamBtn').addEventListener('click', testStreamResponse);
             document.getElementById('memoryStatsBtn').addEventListener('click', showMemoryStats);
             document.getElementById('recentMemoriesBtn').addEventListener('click', showRecentMemories);
             document.getElementById('clearMemoriesBtn').addEventListener('click', clearMemories);
