@@ -79,6 +79,40 @@
                 transform: scale(1);
             }
         }
+
+        /* 等待输出完成的动态效果 */
+        .waiting-effect {
+            display: inline-block;
+        }
+
+        .waiting-effect .waiting-dot {
+            animation: waiting 1.5s infinite ease-in-out both;
+            display: inline-block;
+            margin: 0 1px;
+        }
+
+        .waiting-effect .waiting-dot:nth-child(1) {
+            animation-delay: -0.3s;
+        }
+
+        .waiting-effect .waiting-dot:nth-child(2) {
+            animation-delay: -0.15s;
+        }
+
+        .waiting-effect .waiting-dot:nth-child(3) {
+            animation-delay: 0s;
+        }
+
+        @keyframes waiting {
+            0%, 80%, 100% {
+                opacity: 0.4;
+                transform: scale(0.8);
+            }
+            40% {
+                opacity: 1;
+                transform: scale(1.2);
+            }
+        }
     </style>
 </head>
 
@@ -180,7 +214,7 @@
             addMessage(message, 'user');
             input.value = '';
 
-            // 不显示加载状态，直接创建助手消息容器
+            // 设置加载状态
             isLoading = true;
             const sendButton = document.getElementById('sendButton');
             sendButton.disabled = true;
@@ -188,13 +222,20 @@
 
             // 创建助手消息容器
             const assistantMessageDiv = createAssistantMessageContainer();
+            // 确保动画可见
+            const loadingDots = assistantMessageDiv.querySelector('.loading-dots');
+            if (loadingDots) loadingDots.style.display = 'inline-block';
 
             try {
-                // 使用 fetch 进行流式响应
+                console.log('开始发送请求到 /chat');
+                
+                // 使用 fetch 进行流式响应，确保不缓存响应
                 const response = await fetch('/chat', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
+                        'Cache-Control': 'no-cache',
+                        'X-Requested-With': 'XMLHttpRequest'
                     },
                     body: JSON.stringify({ query: message })
                 });
@@ -202,32 +243,59 @@
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
+                
+                console.log('收到响应，开始处理流数据');
 
+                // 使用 ReadableStream API 处理流式响应
                 const reader = response.body.getReader();
-                const decoder = new TextDecoder();
+                const decoder = new TextDecoder('utf-8');
                 let buffer = '';
                 let accumulatedContent = '';
+                let receivedDataCount = 0;
 
                 while (true) {
                     const { done, value } = await reader.read();
-
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop(); // 保留不完整的行
-
+                    
+                    if (done) {
+                        console.log('流数据读取完成');
+                        break;
+                    }
+                    
+                    // 解码二进制数据
+                    const chunk = decoder.decode(value, { stream: true });
+                    console.log('收到数据块:', chunk);
+                    buffer += chunk;
+                    
+                    // 处理完整的 SSE 消息 - 修复分隔符问题
+                    // SSE 消息可能使用 \n\n 或 \r\n\r\n 作为分隔符
+                    const lines = buffer.split(/\r?\n\r?\n/);
+                    buffer = lines.pop() || ''; // 保留不完整的行
+                    
                     for (const line of lines) {
                         if (line.trim() && line.startsWith('data: ')) {
                             try {
                                 const jsonStr = line.slice(6).trim();
                                 if (jsonStr) {
                                     const data = JSON.parse(jsonStr);
-                                    console.log('处理流数据:', data); // 调试日志
+                                    receivedDataCount++;
+                                    console.log(`处理第 ${receivedDataCount} 条流数据:`, data);
+                                    
+                                    // 处理数据
                                     handleStreamData(data, assistantMessageDiv);
-
+                                    
+                                    // 更新累积内容
                                     if (data.type === 'content') {
-                                        accumulatedContent = data.accumulated || (accumulatedContent + data.content);
+                                        if (data.accumulated) {
+                                            accumulatedContent = data.accumulated;
+                                        } else if (data.content) {
+                                            accumulatedContent += data.content;
+                                        }
+                                    }
+                                    
+                                    // 如果是结束信号，结束处理
+                                    if (data.type === 'end') {
+                                        console.log('收到结束信号');
+                                        break;
                                     }
                                 }
                             } catch (e) {
@@ -236,10 +304,23 @@
                         }
                     }
                 }
+                
+                console.log(`流式响应处理完成，共处理 ${receivedDataCount} 条数据`);
 
             } catch (error) {
                 console.error('流式请求失败:', error);
-                addMessage(`❌ 网络错误: ${error.message}`, 'error');
+                const errorMsg = `❌ 网络错误: ${error.message}`;
+                addMessage(errorMsg, 'error');
+                
+                // 在助手消息中也显示错误
+                const statusArea = assistantMessageDiv.querySelector('.status-area');
+                const loadingDots = assistantMessageDiv.querySelector('.loading-dots');
+                
+                if (loadingDots) loadingDots.style.display = 'none';
+                if (statusArea) {
+                    statusArea.innerHTML = `<span class="text-red-600">${errorMsg}</span>`;
+                    statusArea.style.display = 'block';
+                }
             } finally {
                 // 恢复发送按钮状态
                 isLoading = false;
@@ -255,14 +336,17 @@
 
             messageDiv.innerHTML = `
                 <div class="flex items-start space-x-3">
-                    <div class="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white font-bold">
+                    <div class="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center text-white font-bold relative">
                         🤖
+                        <span class="loading-dots ml-1 text-blue-500 absolute top-0 right-0" style="display:inline-block;">
+                            <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+                        </span>
                     </div>
                     <div class="flex-1">
                         <div class="font-semibold text-green-700 mb-1">
-                            EMR 升级助手 
-                            <span class="loading-dots ml-2 text-blue-500">
-                                <span class="dot">.</span><span class="dot">.</span><span class="dot">.</span>
+                            EMR 升级助手
+                            <span class="waiting-effect ml-2 text-blue-500" style="display:inline-block;">
+                                <span class="waiting-dot">●</span><span class="waiting-dot">●</span><span class="waiting-dot">●</span>
                             </span>
                         </div>
                         <div class="status-area text-sm text-gray-600 mb-2"></div>
@@ -281,72 +365,72 @@
             const statusArea = messageDiv.querySelector('.status-area');
             const contentArea = messageDiv.querySelector('.content-area');
             const loadingDots = messageDiv.querySelector('.loading-dots');
-
-            console.log('收到流数据:', data); // 调试日志
+            const waitingEffect = messageDiv.querySelector('.waiting-effect');
 
             switch (data.type) {
                 case 'heartbeat':
                     // 心跳信号，不显示任何内容
-                    console.log('收到心跳信号');
                     break;
 
                 case 'content':
-                    // 隐藏等待效果和状态信息
-                    if (loadingDots) {
+                    // 只在首次内容到来时隐藏 loading 动画
+                    if (loadingDots && loadingDots.style.display !== 'none') {
                         loadingDots.style.display = 'none';
                     }
                     statusArea.style.display = 'none';
 
-                    // 实时更新内容区域 - 关键改进！
+                    // 实时更新内容区域
                     let content = '';
                     if (data.accumulated) {
-                        // 使用累积内容
                         content = data.accumulated;
                     } else if (data.content) {
-                        // 如果没有累积内容，就追加到现有内容
                         const existingContent = contentArea.getAttribute('data-raw-content') || '';
                         content = existingContent + data.content;
                     }
-
-                    // 保存原始内容
                     contentArea.setAttribute('data-raw-content', content);
 
-                    // 使用 marked.parse 渲染 Markdown
+                    // 渲染 Markdown
                     if (content) {
                         try {
-                            contentArea.innerHTML = marked.parse(content);
+                            if (typeof marked === 'function') {
+                                contentArea.innerHTML = marked(content);
+                            } else if (typeof marked.parse === 'function') {
+                                contentArea.innerHTML = marked.parse(content);
+                            } else {
+                                throw new Error('marked 库不可用');
+                            }
                         } catch (e) {
-                            // 如果 Markdown 解析失败，使用简单的文本格式化
-                            const formattedContent = content
-                                .replace(/\n/g, '<br>')
-                                .replace(/## (.*?)(<br>|$)/g, '<h2 class="text-lg font-semibold mt-4 mb-2 text-gray-800">$1</h2>')
-                                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                                .replace(/\*(.*?)\*/g, '<em>$1</em>');
-
-                            contentArea.innerHTML = formattedContent;
+                            contentArea.innerHTML = content.replace(/\n/g, '<br>');
                         }
                     }
-
-                    // 立即滚动到底部
+                    // 滚动到底部
                     const messagesContainer = document.getElementById('messages');
                     messagesContainer.scrollTop = messagesContainer.scrollHeight;
                     break;
 
+                case 'status':
+                    statusArea.innerHTML = `<span class="text-blue-600">${data.message}</span>`;
+                    statusArea.style.display = 'block';
+                    break;
+
                 case 'error':
-                    // 隐藏等待效果
                     if (loadingDots) {
                         loadingDots.style.display = 'none';
+                    }
+                    if (waitingEffect) {
+                        waitingEffect.style.display = 'none';
                     }
                     statusArea.innerHTML = `<span class="text-red-600">❌ ${data.error}</span>`;
                     statusArea.style.display = 'block';
                     break;
 
                 case 'end':
-                    // 流式响应结束，隐藏等待效果
                     if (loadingDots) {
                         loadingDots.style.display = 'none';
                     }
-                    console.log('流式响应结束');
+                    if (waitingEffect) {
+                        waitingEffect.style.display = 'none';
+                    }
                     break;
             }
         }

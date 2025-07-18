@@ -7,3 +7,6 @@ gunicorn>=21.2.0
 waitress>=2.1.2
 mem0ai
 opensearch-py>=3.0.0
+gevent
+hypercorn
+quart

@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, session
+from quart import Quart, render_template, request, jsonify, Response
 import os
 import json
 import asyncio
@@ -13,13 +13,14 @@ from strands import Agent
 from strands.tools.mcp import MCPClient
 from mem0_integration import create_mem0_integration
 from mem0_tools import mem0_tools
+from strands.models import BedrockModel
 
 load_dotenv()
 
-app = Flask(__name__)
+app = Quart(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'emr-upgrade-assistant-secret-key')
 
-# 禁用 Flask 的缓冲，确保流式响应立即发送
+# 禁用 Quart 的缓冲，确保流式响应立即发送
 app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
 app.config['TEMPLATES_AUTO_RELOAD'] = True
 
@@ -229,16 +230,10 @@ class EMRUpgradeAssistant:
                 "timestamp": datetime.now().isoformat()
             }
 
-    def process_query_stream(self, user_query: str, user_id: str = None):
+    async def process_query_stream(self, user_query: str, user_id: str = None):
         """
         流式处理用户查询 - 使用 Strands Agent 真正的流式响应
-        
-        Args:
-            user_query: 用户查询内容
-            user_id: 用户ID
-            
-        Yields:
-            流式响应数据块
+        保证 LLM 内容和 MCP Server 工具内容都能流式返回到页面，并在后台打印。
         """
         if not self.mcp_client:
             yield {
@@ -247,163 +242,99 @@ class EMRUpgradeAssistant:
                 "timestamp": datetime.now().isoformat()
             }
             return
-        
+
         try:
             print(f"📝 开始流式处理用户查询: {user_query}")
-            
-            # 直接在 MCP 客户端上下文中处理
             with self.mcp_client:
-                # 获取工具和创建 Agent
                 mcp_tools = self.mcp_client.list_tools_sync()
                 all_tools = mcp_tools + mem0_tools
                 print(f"🔧 获取到 {len(mcp_tools)} 个 MCP 工具，{len(mem0_tools)} 个 mem0 工具")
-                
-                # 创建 Agent，禁用默认的 callback handler
-                agent = Agent(tools=all_tools, callback_handler=None)
-                
-                # 为当前用户创建 mem0 实例
+                try:
+                    bedrock_model = BedrockModel(
+                        model_id="us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+                        region_name="us-east-1",
+                        temperature=0.3,
+                    )
+                    agent = Agent(
+                        tools=all_tools,
+                        callback_handler=None,
+                        model=bedrock_model
+                    )
+                    print("✅ 成功创建使用 Claude 4.0 Sonnet 的 Agent")
+                except Exception as model_error:
+                    print(f"⚠️ 使用 Claude 4.0 Sonnet 创建 Agent 失败: {str(model_error)}")
+                    print("尝试使用默认模型创建 Agent")
+                    agent = Agent(tools=all_tools, callback_handler=None)
+                if hasattr(agent, 'model') and hasattr(agent.model, 'config'):
+                    print(f"🔧 使用模型配置: {agent.model.config}")
+                else:
+                    print("⚠️ 无法获取模型配置信息")
                 user_mem0 = create_mem0_integration(user_id)
-                
-                # 设置当前线程的用户 mem0 实例，供工具使用
                 from mem0_tools import set_current_user_mem0
                 set_current_user_mem0(user_mem0)
-                
-                # 获取相关历史上下文
                 historical_context = user_mem0.get_context_for_query(user_query)
-                
-                # 构建完整查询
                 system_instructions = self._get_instructions()
-                
                 if historical_context:
                     full_query = f"{system_instructions}\n\n{historical_context}\n\n用户问题: {user_query}"
                     print(f"📚 添加了历史上下文，长度: {len(historical_context)}")
                 else:
                     full_query = f"{system_instructions}\n\n用户问题: {user_query}"
-                
                 print(f"🔧 开始 Strands Agent 流式调用...")
-                
-                # 使用异步流式调用
-                import asyncio
-                import threading
-                import queue
-                
-                # 创建队列来传递数据
-                data_queue = queue.Queue()
                 accumulated_response = ""
-                
-                async def async_stream_worker():
-                    """异步流式处理工作函数"""
+                async def async_stream():
+                    nonlocal accumulated_response
                     try:
-                        nonlocal accumulated_response
-                        
-                        # 使用 Strands Agent 的 stream_async 方法
-                        agent_stream = agent.stream_async(full_query)
-                        
-                        # 处理流式事件
-                        async for event in agent_stream:
+                        async for event in agent.stream_async(full_query):
+                            # 注释掉 MCP Server 查询返回的日志打印
+                            # print("Agent event:", event)  # 打印所有 event
+                            # LLM 内容流式返回
                             if "data" in event:
-                                # 文本生成事件
                                 content = event["data"]
                                 if content:
                                     accumulated_response += content
-                                    data_queue.put(('content', content, accumulated_response))
-                            
-                            elif "current_tool_use" in event and event["current_tool_use"].get("name"):
-                                # 工具使用事件
+                                    print(f"📝 LLM流式内容: {content}")
+                                    yield {
+                                        "type": "content",
+                                        "content": content,
+                                        "accumulated": accumulated_response,
+                                        "timestamp": datetime.now().isoformat()
+                                    }
+                            # 工具调用事件
+                            if "current_tool_use" in event and event["current_tool_use"].get("name"):
                                 tool_name = event["current_tool_use"]["name"]
-                                print(f"🔧 工具使用: {tool_name}")
-                                data_queue.put(('tool', f"[使用工具: {tool_name}]", accumulated_response))
-                        
-                        data_queue.put(('end', None, accumulated_response))
-                        print("✅ Strands Agent 流式调用完成")
-                        
+                                print(f"🔧 工具调用: {tool_name}")
+                                yield {
+                                    "type": "status",
+                                    "message": f"[使用工具: {tool_name}]",
+                                    "timestamp": datetime.now().isoformat()
+                                }
+                            # MCP Server 工具返回内容 - 关闭日志打印
+                            if "tool_response" in event and event["tool_response"]:
+                                # print(f"🟢 MCP Server 工具返回内容: {event['tool_response']}")
+                                pass
                     except Exception as e:
                         print(f"❌ 异步流式调用失败: {str(e)}")
-                        data_queue.put(('error', str(e), accumulated_response))
-                
-                def sync_worker():
-                    """在线程中运行异步函数"""
+                        yield {
+                            "type": "error",
+                            "error": str(e),
+                            "timestamp": datetime.now().isoformat()
+                        }
+                async for chunk in async_stream():
+                    yield chunk
+                if accumulated_response:
                     try:
-                        # 创建新的事件循环
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        
-                        # 运行异步函数
-                        loop.run_until_complete(async_stream_worker())
-                        
-                    except Exception as e:
-                        print(f"❌ 线程执行失败: {str(e)}")
-                        data_queue.put(('error', str(e), accumulated_response))
-                    finally:
-                        loop.close()
-                
-                # 启动异步调用线程
-                worker_thread = threading.Thread(target=sync_worker)
-                worker_thread.daemon = True
-                worker_thread.start()
-                
-                # 主线程实时处理结果
-                while True:
-                    try:
-                        # 获取数据，最多等待2秒
-                        msg_type, content, current_accumulated = data_queue.get(timeout=2.0)
-                        
-                        if msg_type == 'content':
-                            # 立即 yield 给前端
-                            yield {
-                                "type": "content",
-                                "content": content,
-                                "accumulated": current_accumulated,
-                                "timestamp": datetime.now().isoformat()
+                        user_mem0.add_memory(
+                            message="EMR升级咨询对话",
+                            user_query=user_query,
+                            response=accumulated_response,
+                            metadata={
+                                "user_id": user_id,
+                                "response_length": len(accumulated_response)
                             }
-                            
-                        elif msg_type == 'tool':
-                            # 工具使用信息
-                            yield {
-                                "type": "status",
-                                "message": content,
-                                "timestamp": datetime.now().isoformat()
-                            }
-                            
-                        elif msg_type == 'end':
-                            print("✅ 流式输出完成")
-                            
-                            # 保存对话记忆到 mem0
-                            if current_accumulated:
-                                try:
-                                    session_id = session.get('session_id', 'unknown') if session else 'unknown'
-                                    user_mem0.add_memory(
-                                        message="EMR升级咨询对话",
-                                        user_query=user_query,
-                                        response=current_accumulated,
-                                        metadata={
-                                            "user_id": user_id,
-                                            "session_id": session_id,
-                                            "response_length": len(current_accumulated)
-                                        }
-                                    )
-                                    print("💾 对话记忆已保存到 mem0")
-                                except Exception as mem_error:
-                                    print(f"⚠️ 保存记忆失败: {str(mem_error)}")
-                            
-                            break
-                            
-                        elif msg_type == 'error':
-                            print(f"❌ 收到错误: {content}")
-                            yield {
-                                "type": "error",
-                                "error": content,
-                                "timestamp": datetime.now().isoformat()
-                            }
-                            break
-                            
-                    except queue.Empty:
-                        # 如果队列为空，检查线程是否还活着
-                        if not worker_thread.is_alive():
-                            print("⚠️ 工作线程已结束，但队列为空")
-                            break
-                        continue
-            
+                        )
+                        print("💾 对话记忆已保存到 mem0")
+                    except Exception as mem_error:
+                        print(f"⚠️ 保存记忆失败: {str(mem_error)}")
         except Exception as e:
             print(f"❌ 流式处理查询时出错: {str(e)}")
             yield {
@@ -480,15 +411,15 @@ class EMRUpgradeAssistant:
 emr_assistant = EMRUpgradeAssistant()
 
 @app.route('/')
-def index():
+async def index():
     """主页"""
-    return render_template('index.html')
+    return await render_template('index.html')
 
 @app.route('/chat', methods=['POST'])
-def chat_stream():
+async def chat_stream():
     """处理聊天请求 - 流式响应"""
     try:
-        data = request.get_json()
+        data = await request.get_json()
         user_query = data.get('query', '').strip()
         
         if not user_query:
@@ -497,14 +428,12 @@ def chat_stream():
                 'error': '请输入您的问题'
             }), 400
         
-        # 获取或创建用户会话ID
-        user_id = session.get('user_id')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-            session['user_id'] = user_id
+        # 临时去掉 session，直接用随机 user_id
+        import uuid
+        user_id = str(uuid.uuid4())
         
         # 返回流式响应 - 强制实时传输，添加填充数据
-        def generate_stream():
+        async def generate_stream():
             import sys
             import os
             
@@ -524,17 +453,44 @@ def chat_stream():
                 
                 print("📡 心跳和填充数据已发送，开始处理查询...")
                 
+                # 先发送一个初始内容，确保前端能立即显示
+                initial_content = {
+                    "type": "content",
+                    "content": "正在思考您的问题...\n\n",
+                    "accumulated": "正在思考您的问题...\n\n",
+                    "timestamp": datetime.now().isoformat()
+                }
+                yield f"data: {json.dumps(initial_content, ensure_ascii=False)}\n\n"
+                yield f": initial-content\n\n"
+                
                 # 使用完整的 Strands Agent 流式处理
                 chunk_count = 0
-                for chunk in emr_assistant.process_query_stream(user_query, user_id):
+                async for chunk in emr_assistant.process_query_stream(user_query, user_id):
                     chunk_count += 1
-                    chunk_data = json.dumps(chunk, ensure_ascii=False)
+                    print(f"生成第 {chunk_count} 个数据块: {chunk}")
                     
-                    # 立即发送数据
+                    # 确保 JSON 序列化不会失败
+                    try:
+                        chunk_data = json.dumps(chunk, ensure_ascii=False)
+                    except Exception as json_err:
+                        print(f"JSON 序列化失败: {str(json_err)}, 尝试简化数据")
+                        # 如果序列化失败，尝试简化数据
+                        simplified_chunk = {
+                            "type": chunk.get("type", "content"),
+                            "content": str(chunk.get("content", "")),
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        chunk_data = json.dumps(simplified_chunk, ensure_ascii=False)
+                    
+                    # 立即发送数据，确保每个块都有完整的 SSE 格式
                     yield f"data: {chunk_data}\n\n"
                     
                     # 添加小的填充数据确保立即传输
                     yield f": chunk-{chunk_count}\n\n"
+                    
+                    # 强制刷新缓冲区
+                    sys.stdout.flush()
+                    sys.stderr.flush()
                 
                 # 发送结束信号
                 end_data = json.dumps({'type': 'end'})
@@ -543,54 +499,28 @@ def chat_stream():
                 print(f"✅ 流式响应完成，共发送 {chunk_count} 个数据块")
                 
             except Exception as e:
+                import traceback
                 print(f"❌ 流式响应错误: {str(e)}")
+                print(f"错误堆栈: {traceback.format_exc()}")
                 error_data = json.dumps({'type': 'error', 'error': str(e)})
                 yield f"data: {error_data}\n\n"
         
-        from flask import Response
-        
-        # 创建一个包装生成器，强制立即发送每个数据块
-        def wrapped_generator():
-            import sys
-            for data in generate_stream():
-                yield data
-                # 强制刷新所有可能的缓冲区
-                try:
-                    sys.stdout.flush()
-                    sys.stderr.flush()
-                except:
-                    pass
-        
-        response = Response(
-            wrapped_generator(),
-            mimetype='text/event-stream',
-            headers={
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache',
-                'Expires': '0',
-                'Connection': 'keep-alive',
-                'Access-Control-Allow-Origin': '*',
-                'Access-Control-Allow-Headers': 'Cache-Control',
-                'X-Accel-Buffering': 'no',  # 禁用 Nginx 缓冲
-                'X-Content-Type-Options': 'nosniff'
-            }
-        )
-        
-        # 禁用 Flask 的隐式序列转换
-        response.implicit_sequence_conversion = False
-        return response
+        return Response(generate_stream(), content_type='text/event-stream')
         
     except Exception as e:
+        import traceback
+        print(f"❌ 处理聊天请求失败: {str(e)}")
+        print(f"错误堆栈: {traceback.format_exc()}")
         return jsonify({
             'success': False,
             'error': f'服务器错误: {str(e)}'
         }), 500
 
 @app.route('/chat-sync', methods=['POST'])
-def chat_sync():
+async def chat_sync():
     """处理聊天请求 - 同步响应（备用）"""
     try:
-        data = request.get_json()
+        data = await request.get_json()
         user_query = data.get('query', '').strip()
         
         if not user_query:
@@ -600,13 +530,10 @@ def chat_sync():
             }), 400
         
         # 获取或创建用户会话ID
-        user_id = session.get('user_id')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-            session['user_id'] = user_id
+        user_id = str(uuid.uuid4())
         
         # 处理查询
-        result = asyncio.run(emr_assistant.process_query(user_query, user_id))
+        result = await emr_assistant.process_query(user_query, user_id)
         
         return jsonify(result)
         
@@ -617,14 +544,11 @@ def chat_sync():
         }), 500
 
 @app.route('/memory/stats')
-def memory_stats():
+async def memory_stats():
     """获取记忆统计信息"""
     try:
         # 获取或创建用户会话ID
-        user_id = session.get('user_id')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-            session['user_id'] = user_id
+        user_id = str(uuid.uuid4())
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -642,10 +566,10 @@ def memory_stats():
         }), 500
 
 @app.route('/memory/search', methods=['POST'])
-def search_memories():
+async def search_memories():
     """搜索历史记忆"""
     try:
-        data = request.get_json()
+        data = await request.get_json()
         query = data.get('query', '').strip()
         limit = data.get('limit', 5)
         
@@ -656,10 +580,7 @@ def search_memories():
             }), 400
         
         # 获取或创建用户会话ID
-        user_id = session.get('user_id')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-            session['user_id'] = user_id
+        user_id = str(uuid.uuid4())
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -680,16 +601,13 @@ def search_memories():
         }), 500
 
 @app.route('/memory/recent')
-def get_recent_memories():
+async def get_recent_memories():
     """获取最近的记忆"""
     try:
-        limit = request.args.get('limit', 10, type=int)
+        limit = int(request.args.get('limit', 10))
         
         # 获取或创建用户会话ID
-        user_id = session.get('user_id')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-            session['user_id'] = user_id
+        user_id = str(uuid.uuid4())
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -709,14 +627,11 @@ def get_recent_memories():
         }), 500
 
 @app.route('/memory/clear', methods=['POST'])
-def clear_memories():
+async def clear_memories():
     """清除所有记忆"""
     try:
         # 获取或创建用户会话ID
-        user_id = session.get('user_id')
-        if not user_id:
-            user_id = str(uuid.uuid4())
-            session['user_id'] = user_id
+        user_id = str(uuid.uuid4())
         
         # 为当前用户创建 mem0 实例
         user_mem0 = create_mem0_integration(user_id)
@@ -741,22 +656,17 @@ def clear_memories():
         }), 500
 
 @app.route('/test-stream')
-def test_stream():
+async def test_stream():
     """测试流式响应 - 最简单的版本"""
-    def generate_test_stream():
-        import time
-        
-        # 发送心跳
+    async def generate_test_stream():
+        import asyncio
         yield f"data: {json.dumps({'type': 'heartbeat'})}\n\n"
-        
-        # 发送测试内容
         test_messages = [
             "这是第一条测试消息",
-            "这是第二条测试消息", 
+            "这是第二条测试消息",
             "这是第三条测试消息",
             "流式响应测试完成！"
         ]
-        
         for i, msg in enumerate(test_messages):
             chunk_data = {
                 "type": "content",
@@ -764,29 +674,13 @@ def test_stream():
                 "accumulated": " ".join(test_messages[:i+1]),
                 "timestamp": datetime.now().isoformat()
             }
-            
             yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
-            time.sleep(0.5)  # 模拟延迟
-        
-        # 发送结束信号
+            await asyncio.sleep(0.5)
         yield f"data: {json.dumps({'type': 'end'})}\n\n"
-    
-    from flask import Response
-    return Response(
-        generate_test_stream(),
-        mimetype='text/event-stream',
-        headers={
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-            'X-Accel-Buffering': 'no'
-        }
-    )
+    return Response(generate_test_stream(), content_type='text/event-stream')
 
 @app.route('/health')
-def health():
+async def health():
     """健康检查"""
     try:
         # 创建一个临时的 mem0 实例来检查状态
@@ -803,45 +697,14 @@ def health():
     })
 
 @app.errorhandler(404)
-def not_found(error):
+async def not_found(error):
     return jsonify({'error': 'Not found'}), 404
 
 @app.errorhandler(500)
-def internal_error(error):
+async def internal_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
+# 启动方式提示
 if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5001))
-    debug = os.getenv('FLASK_ENV') == 'development'
-    
-    print(f"启动 EMR 升级助手服务...")
-    print(f"访问地址: http://localhost:{port}")
-    
-    # 强制禁用缓冲
-    import sys
-    import os
-    os.environ['PYTHONUNBUFFERED'] = '1'
-    sys.stdout.reconfigure(line_buffering=True)
-    
-    # 尝试使用 Werkzeug 的开发服务器，但禁用缓冲
-    try:
-        from werkzeug.serving import run_simple
-        print("🚀 使用 Werkzeug 服务器（无缓冲模式）")
-        run_simple(
-            hostname='0.0.0.0',
-            port=port,
-            application=app,
-            use_debugger=debug,
-            use_reloader=False,
-            threaded=True,
-            passthrough_errors=True
-        )
-    except ImportError:
-        print("⚠️ Werkzeug 不可用，使用 Flask 内置服务器")
-        app.run(
-            host='0.0.0.0',
-            port=port,
-            debug=debug,
-            threaded=True,
-            use_reloader=False
-        )
+    print('请使用 hypercorn 启动此应用，例如:')
+    print('hypercorn emr_upgrade_assistant.app:app --bind 0.0.0.0:5001')

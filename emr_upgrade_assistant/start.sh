@@ -53,4 +53,5 @@ echo "访问地址: http://localhost:5001"
 echo "按 Ctrl+C 停止服务"
 echo ""
 
-python app.py
+# python app.py
+hypercorn app:app --bind 0.0.0.0:5001

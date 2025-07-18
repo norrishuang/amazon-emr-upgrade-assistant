@@ -57,7 +57,7 @@ class Mem0Integration:
                 "llm": {
                     "provider": "aws_bedrock",
                     "config": {
-                        "model": "anthropic.claude-3-sonnet-20240229-v1:0",
+                        "model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # 使用 Claude 4.0 (Sonnet)
                         "temperature": 0.1,
                         "max_tokens": 2000,
                         "aws_access_key_id": os.environ.get("AWS_ACCESS_KEY_ID"),
