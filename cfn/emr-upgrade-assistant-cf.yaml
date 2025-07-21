@@ -1,0 +1,1044 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template for EMR Upgrade Assistant with OpenSearch hybrid search and embedding models'
+
+Parameters:
+  OpenSearchDomainName:
+    Type: String
+    Description: Name of the OpenSearch domain
+    Default: emr-upgrade-assistant
+  
+  OpenSearchDomainEndpoint:
+    Type: String
+    Description: Full endpoint URL for the OpenSearch domain (e.g., https://search-domain.region.es.amazonaws.com)
+    
+  OpenSearchCredentialsSecretName:
+    Type: String
+    Description: Name of the Secrets Manager secret containing OpenSearch credentials
+    Default: opensearch_credentials
+    
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC where the EC2 instance will be launched
+    
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet where the EC2 instance will be launched
+    
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+    
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Security group ID for the EC2 instance (leave empty to create a new one)
+    Default: ""
+  
+  Region:
+    Type: String
+    Description: AWS Region
+    Default: us-east-1
+    
+  DependenciesS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda layer dependencies zip file
+    
+  DependenciesS3Key:
+    Type: String
+    Description: S3 key for the Lambda layer dependencies zip file
+
+Conditions:
+  CreateSecurityGroup: !Equals [!Ref InstanceSecurityGroup, ""]
+
+Mappings:
+  RegionMap:
+    us-east-1:
+      AMI: ami-09e6f87a47903347c  # Amazon Linux 2023 AMI
+    us-east-2:
+      AMI: ami-07a7a8c10c60f25be
+    us-west-1:
+      AMI: ami-0ce2cb35386fc22e9
+    us-west-2:
+      AMI: ami-05f9478b4deb8d173
+    ap-northeast-1:
+      AMI: ami-0f8048fa3e3b9e8ff
+    ap-northeast-2:
+      AMI: ami-0f3a440bbcff3d043
+    ap-southeast-1:
+      AMI: ami-0df7a207adb9748c7
+    ap-southeast-2:
+      AMI: ami-0310483fb2b488153
+    eu-central-1:
+      AMI: ami-0faab6bdbac9486fb
+    eu-west-1:
+      AMI: ami-0e309a5f3a6dd97ea
+    eu-west-2:
+      AMI: ami-0b1b3a0c66d750e27
+    sa-east-1:
+      AMI: ami-0a0b913ef3249633d
+    cn-north-1:
+      AMI: ami-0b4d5e4d0d9c7f79e
+    cn-northwest-1:
+      AMI: ami-0b4d5e4d0d9c7f79e
+
+Resources:
+  # IAM Policy for invoking Bedrock embedding models
+  InvokeEmbeddingModelPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy to allow invoking Bedrock Titan embedding model
+      ManagedPolicyName: !Sub "invoke-embedding-model-policy-${AWS::StackName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+            Resource:
+              - !Sub 'arn:aws:bedrock:${Region}::foundation-model/amazon.titan-embed-text-v2:0'
+
+  # IAM Role for OpenSearch to invoke Bedrock embedding models
+  InvokeEmbeddingModelRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "invoke-embedding-model-role-${AWS::StackName}"
+      Description: Role for OpenSearch to invoke Bedrock embedding models
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - es.amazonaws.com
+                - aoss.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref InvokeEmbeddingModelPolicy
+
+  # IAM Policy for creating ML connectors in OpenSearch
+  CreateMLConnectorPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Policy to allow creating ML connectors in OpenSearch
+      ManagedPolicyName: !Sub "create-ml-connector-policy-${AWS::StackName}"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action: iam:PassRole
+            Resource: !GetAtt InvokeEmbeddingModelRole.Arn
+          - Effect: Allow
+            Action: es:ESHttpPost
+            Resource: !Sub 'arn:aws:es:${Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}'
+
+  # IAM Role for creating ML connectors in OpenSearch
+  CreateMLConnectorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "create-ml-connector-role-${AWS::StackName}"
+      Description: Role for creating ML connectors in OpenSearch
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: 
+                - lambda.amazonaws.com
+                - es.amazonaws.com
+                - aoss.amazonaws.com
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref CreateMLConnectorPolicy
+
+  # Lambda execution role for OpenSearch configuration
+  OpenSearchConfigurationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "opensearch-config-lambda-role-${AWS::StackName}"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OpenSearchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - es:ESHttpGet
+                  - es:ESHttpPost
+                  - es:ESHttpPut
+                Resource: !Sub 'arn:aws:es:${Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+        - PolicyName: IAMPassRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                  - iam:GetRole
+                Resource: 
+                  - !GetAtt InvokeEmbeddingModelRole.Arn
+                  - !GetAtt CreateMLConnectorRole.Arn
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${OpenSearchCredentialsSecretName}*'
+
+  # Lambda Layer for Python dependencies
+  PythonDependenciesLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      CompatibleRuntimes:
+        - python3.9
+      Content:
+        S3Bucket: !Ref DependenciesS3Bucket
+        S3Key: !Ref DependenciesS3Key
+      Description: Layer containing Python dependencies for OpenSearch ML Connector
+      LayerName: !Sub "opensearch-ml-connector-deps-${AWS::StackName}"
+
+  # Lambda function to configure OpenSearch and create hybrid search pipeline
+  OpenSearchConfigurationLambda:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - OpenSearchConfigurationLambdaRole
+      - InvokeEmbeddingModelRole
+      - CreateMLConnectorRole
+    Properties:
+      FunctionName: !Sub "${AWS::StackName}-OpenSearchConfig"
+      Handler: index.handler
+      Role: !GetAtt OpenSearchConfigurationLambdaRole.Arn
+      Runtime: python3.9
+      Timeout: 300
+      Layers:
+        - !Ref PythonDependenciesLayer
+      Environment:
+        Variables:
+          OPENSEARCH_DOMAIN_ENDPOINT: !Ref OpenSearchDomainEndpoint
+          OPENSEARCH_CREDENTIALS_SECRET_NAME: !Ref OpenSearchCredentialsSecretName
+          REGION: !Ref Region
+          INVOKE_EMBEDDING_MODEL_ROLE_ARN: !GetAtt InvokeEmbeddingModelRole.Arn
+          CREATE_ML_CONNECTOR_ROLE_ARN: !GetAtt CreateMLConnectorRole.Arn
+          ACCOUNT_ID: !Ref AWS::AccountId
+          AWS_CLOUDFORMATION_STACK_NAME: !Ref AWS::StackName
+      Code:
+        ZipFile: |
+          import boto3
+          import json
+          import os
+          import requests
+          from requests_aws4auth import AWS4Auth
+          import time
+          import urllib3
+          import logging
+          
+          # Configure logging
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+          
+          # 内联 cfnresponse 模块
+          SUCCESS = "SUCCESS"
+          FAILED = "FAILED"
+          http = urllib3.PoolManager()
+          
+          def send_cfn_response(event, context, responseStatus, responseData, physicalResourceId=None, noEcho=False, reason=None):
+              responseUrl = event['ResponseURL']
+              logger.info(f"CFN response URL: {responseUrl}")
+              
+              responseBody = {
+                  'Status': responseStatus,
+                  'Reason': reason or "See the details in CloudWatch Log Stream: {}".format(context.log_stream_name),
+                  'PhysicalResourceId': physicalResourceId or context.log_stream_name,
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'NoEcho': noEcho,
+                  'Data': responseData
+              }
+              
+              json_responseBody = json.dumps(responseBody)
+              logger.info(f"Response body: {json_responseBody}")
+              
+              headers = {
+                  'content-type': '',
+                  'content-length': str(len(json_responseBody))
+              }
+              
+              try:
+                  response = http.request('PUT', responseUrl, headers=headers, body=json_responseBody)
+                  logger.info(f"Status code: {response.status}")
+              except Exception as e:
+                  logger.error(f"send(..) failed executing http.request(..): {e}")
+
+          def handler(event, context):
+              # For CloudFormation custom resource
+              responseData = {}
+              
+              # Log the event for debugging
+              logger.info(f"Received event: {json.dumps(event)}")
+              
+              # Check if this is a CloudFormation delete event
+              if event.get('RequestType') == 'Delete':
+                  logger.info("Processing Delete request")
+                  send_cfn_response(event, context, SUCCESS, responseData)
+                  return
+              
+              try:
+                  # Get environment variables
+                  opensearch_endpoint = os.environ['OPENSEARCH_DOMAIN_ENDPOINT']
+                  region = os.environ['REGION']
+                  invoke_role_arn = os.environ['INVOKE_EMBEDDING_MODEL_ROLE_ARN']
+                  create_connector_role_arn = os.environ['CREATE_ML_CONNECTOR_ROLE_ARN']
+                  account_id = os.environ['ACCOUNT_ID']
+                  secret_name = os.environ['OPENSEARCH_CREDENTIALS_SECRET_NAME']
+                  
+                  logger.info(f"OpenSearch endpoint: {opensearch_endpoint}")
+                  logger.info(f"Region: {region}")
+                  logger.info(f"Secret name: {secret_name}")
+                  
+                  # Get OpenSearch credentials from Secrets Manager
+                  logger.info("Getting OpenSearch credentials from Secrets Manager")
+                  secrets_client = boto3.client('secretsmanager', region_name=region)
+                  secret_response = secrets_client.get_secret_value(SecretId=secret_name)
+                  secret = json.loads(secret_response['SecretString'])
+                  admin_user = secret.get('username')
+                  admin_password = secret.get('password')
+                  
+                  if not admin_user or not admin_password:
+                      raise Exception(f"Secret {secret_name} does not contain username and password keys")
+                  
+                  logger.info(f"Successfully retrieved OpenSearch credentials for user: {admin_user}")
+                  
+                  # Set up authentication
+                  userauth = (admin_user, admin_password)
+                  headers = {"Content-Type": "application/json"}
+                  
+                  # Disable SSL warnings - not recommended for production
+                  urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+                  
+                  # Configure OpenSearch security - Add role mapping
+                  logger.info("Configuring OpenSearch security - Adding role mapping")
+                  
+                  # Get the Lambda execution role using the Lambda API
+                  try:
+                      lambda_client = boto3.client('lambda')
+                      function_name = os.environ['AWS_LAMBDA_FUNCTION_NAME']
+                      response = lambda_client.get_function(FunctionName=function_name)
+                      lambda_role_arn = response['Configuration']['Role']
+                      logger.info(f"Lambda execution role ARN: {lambda_role_arn}")
+                  except Exception as e:
+                      logger.warning(f"Error getting Lambda role via API: {str(e)}")
+                      lambda_role_arn = f"arn:aws:iam::{account_id}:role/opensearch-config-lambda-role-{os.environ.get('AWS_CLOUDFORMATION_STACK_NAME', '')}"
+                      logger.info(f"Using fallback Lambda role: {lambda_role_arn}")
+                  
+                  # Get existing role mapping to preserve current users
+                  try:
+                      logger.info("Getting existing role mapping for all_access role")
+                      get_response = requests.get(
+                          f"{opensearch_endpoint}/_plugins/_security/api/rolesmapping/all_access",
+                          auth=userauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      
+                      if get_response.status_code == 200:
+                          existing_mapping = get_response.json()
+                          logger.info(f"Existing role mapping: {json.dumps(existing_mapping)}")
+                          
+                          role_mapping = {
+                              "backend_roles": existing_mapping.get("all_access", {}).get("backend_roles", []),
+                              "hosts": existing_mapping.get("all_access", {}).get("hosts", []),
+                              "users": existing_mapping.get("all_access", {}).get("users", [])
+                          }
+                          
+                          # Make sure admin user is in the users list
+                          if admin_user not in role_mapping["users"]:
+                              role_mapping["users"].append(admin_user)
+                              
+                          # Add our roles to backend_roles
+                          new_roles = [
+                              create_connector_role_arn,
+                              lambda_role_arn,
+                              invoke_role_arn
+                          ]
+                          
+                          # Add new roles without duplicates
+                          for role in new_roles:
+                              if role not in role_mapping["backend_roles"]:
+                                  role_mapping["backend_roles"].append(role)
+                      else:
+                          logger.warning(f"Failed to get existing role mapping: {get_response.status_code} - {get_response.text}")
+                          role_mapping = {
+                              "backend_roles": [
+                                  create_connector_role_arn,
+                                  lambda_role_arn,
+                                  invoke_role_arn
+                              ],
+                              "users": [admin_user]
+                          }
+                  except Exception as e:
+                      logger.error(f"Error getting existing role mapping: {str(e)}")
+                      role_mapping = {
+                          "backend_roles": [
+                              create_connector_role_arn,
+                              lambda_role_arn,
+                              invoke_role_arn
+                          ],
+                          "users": [admin_user]
+                      }
+                  
+                  logger.info(f"Final role mapping to apply: {json.dumps(role_mapping)}")
+                  
+                  try:
+                      response = requests.put(
+                          f"{opensearch_endpoint}/_plugins/_security/api/rolesmapping/all_access",
+                          auth=userauth,
+                          json=role_mapping,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Role mapping response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to configure role mapping: {response.text}")
+                  except Exception as e:
+                      logger.error(f"Error configuring role mapping: {str(e)}")
+                      raise e
+                  
+                  # Create AWS4Auth for connector creation
+                  logger.info("Creating AWS4Auth for connector creation")
+                  try:
+                      session = boto3.Session()
+                      credentials = session.get_credentials()
+
+                      awsauth = AWS4Auth(
+                          credentials.access_key,
+                          credentials.secret_key,
+                          region,
+                          'es',
+                          session_token=credentials.token
+                      )
+
+                      # Log the identity for debugging
+                      sts_client = boto3.client('sts')
+                      identity = sts_client.get_caller_identity()
+                      logger.info(f"Current identity: {json.dumps(identity)}")
+
+                  except Exception as e:
+                      logger.error(f"Error creating AWS4Auth: {str(e)}")
+                      raise e
+                  
+                  # Create Titan Embedding Connector using ML Commons
+                  logger.info("Creating Titan Embedding Connector using ML Commons")
+                  
+                  connector_payload = {
+                      "name": "titan-embedding-connector",
+                      "description": "Connector for Titan Embedding model via Amazon Bedrock",
+                      "version": "1",
+                      "protocol": "aws_sigv4",
+                      "parameters": {
+                          "embeddingTypes": """["float"]""",
+                          "region": region,
+                          "service_name": "bedrock",
+                          "action": "invoke-model",
+                          "normalize": "true",
+                          "model_id": "amazon.titan-embed-text-v2:0",
+                          "content_type": "application/json",
+                          "dimensions": "1024"
+                      },
+                      "credential": {
+                          "roleArn": invoke_role_arn
+                      },
+                      "actions": [
+                          {
+                            "action_type": "PREDICT",
+                            "method": "POST",
+                            "url": "https://bedrock-runtime.${parameters.region}.amazonaws.com/model/${parameters.model_id}/invoke",
+                            "headers": {
+                              "x-amz-content-sha256": "required",
+                              "content-type": "application/json"
+                            },
+                            "request_body": """{ "inputText": "${parameters.inputText}", "dimensions": ${parameters.dimensions}, "normalize": ${parameters.normalize}, "embeddingTypes": ${parameters.embeddingTypes} }""",
+                            "pre_process_function": "connector.pre_process.bedrock.embedding",
+                            "post_process_function": "connector.post_process.bedrock.embedding"
+                        }
+                      ],
+                  }
+                  
+                  try:
+                      # Create Titan embedding connector
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/connectors/_create",
+                          auth=awsauth,
+                          json=connector_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Register Titan embedding connector response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to register Titan embedding connector: {response.text}")
+                      
+                      logger.info("Successfully registered Titan embedding connector")
+                      
+                      embedding_connector_id = json.loads(response.text)['connector_id']
+                      
+                      if not embedding_connector_id:
+                          raise Exception("Could not find Titan embedding connector ID after registration")
+                      
+                      # Create model from connector
+                      model_payload = {
+                          "name": "titan-embedding-model",
+                          "function_name": "remote",
+                          "description": "Titan Embedding model via Amazon Bedrock",
+                          "connector_id": embedding_connector_id
+                      }
+                      
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/models/_register",
+                          auth=awsauth,
+                          json=model_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Register Titan embedding model response: {response.status_code} - {response.text}")
+                      
+                      embedding_model_id = response.json()['model_id']
+                      
+                      if not embedding_model_id:
+                          raise Exception("Could not find Titan embedding model ID after registration")
+                      
+                      responseData['embeddingModelId'] = embedding_model_id
+                      responseData['embeddingConnectorId'] = embedding_connector_id
+                      logger.info(f"Titan embedding model ID: {embedding_model_id}")
+                      logger.info(f"Titan embedding connector ID: {embedding_connector_id}")
+          
+                      # Deploy Embedding model
+                      response = requests.post(
+                          f"{opensearch_endpoint}/_plugins/_ml/models/{embedding_model_id}/_deploy",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Embedding model deploy response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to deploy Embedding model: {response.text}")
+
+                  except Exception as e:
+                      logger.error(f"Error creating Titan embedding integration: {str(e)}")
+                      raise e
+                  
+                  # Create Index for Knowledge Base Data
+                  logger.info("Creating Knowledge Base Index")
+                  index_name = "emr_upgrade_hive"
+                  
+                  # Define the mapping for the index
+                  mapping = {
+                      "settings": {
+                          "index": {
+                              "knn": True,
+                              "number_of_shards": 1,
+                              "number_of_replicas": 1
+                          }
+                      },
+                      "mappings": {
+                          "properties": {
+                              "text": {"type": "text"},
+                              "embedding": {
+                                  "type": "knn_vector",
+                                  "dimension": 1024,  # Titan embedding v2 dimension is 1024
+                                  "method": {
+                                      "name": "hnsw",
+                                      "space_type": "l2",
+                                      "engine": "faiss",
+                                      "parameters": {"ef_construction": 128, "m": 24}
+                                  }
+                              }
+                          }
+                      }
+                  }
+          
+                  try:
+                      # Check if index already exists
+                      response = requests.head(
+                          f"{opensearch_endpoint}/{index_name}",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+          
+                      # If index doesn't exist, create it
+                      if response.status_code == 404:
+                          logger.info(f"Creating index {index_name}")
+                          response = requests.put(
+                              f"{opensearch_endpoint}/{index_name}",
+                              auth=awsauth,
+                              json=mapping,
+                              headers=headers,
+                              verify=False
+                          )
+                          logger.info(f"Create index response: {response.status_code} - {response.text}")
+                          if response.status_code >= 400:
+                              raise Exception(f"Failed to create index: {response.text}")
+                      else:
+                          logger.info(f"Index {index_name} already exists")
+                  except Exception as e:
+                      logger.error(f"Error creating knowledge base index: {str(e)}")
+                      raise e
+
+                  # Create Index for mem0 memories
+                  logger.info("Creating mem0 Memory Index")
+                  memory_index_name = "emr_assistant_memories"
+                  
+                  # Define the mapping for the memory index
+                  memory_mapping = {
+                      "settings": {
+                          "index": {
+                              "knn": True,
+                              "number_of_shards": 1,
+                              "number_of_replicas": 1
+                          }
+                      },
+                      "mappings": {
+                          "properties": {
+                              "text": {"type": "text"},
+                              "memory": {"type": "text"},
+                              "user_id": {"type": "keyword"},
+                              "created_at": {"type": "date"},
+                              "updated_at": {"type": "date"},
+                              "metadata": {"type": "object"},
+                              "embedding": {
+                                  "type": "knn_vector",
+                                  "dimension": 1024,  # Titan embedding v2 dimension is 1024
+                                  "method": {
+                                      "name": "hnsw",
+                                      "space_type": "l2",
+                                      "engine": "faiss",
+                                      "parameters": {"ef_construction": 128, "m": 24}
+                                  }
+                              }
+                          }
+                      }
+                  }
+          
+                  try:
+                      # Check if memory index already exists
+                      response = requests.head(
+                          f"{opensearch_endpoint}/{memory_index_name}",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+          
+                      # If index doesn't exist, create it
+                      if response.status_code == 404:
+                          logger.info(f"Creating memory index {memory_index_name}")
+                          response = requests.put(
+                              f"{opensearch_endpoint}/{memory_index_name}",
+                              auth=awsauth,
+                              json=memory_mapping,
+                              headers=headers,
+                              verify=False
+                          )
+                          logger.info(f"Create memory index response: {response.status_code} - {response.text}")
+                          if response.status_code >= 400:
+                              raise Exception(f"Failed to create memory index: {response.text}")
+                      else:
+                          logger.info(f"Memory index {memory_index_name} already exists")
+                  except Exception as e:
+                      logger.error(f"Error creating memory index: {str(e)}")
+                      raise e
+
+                  # Create Hybrid Search Pipeline
+                  logger.info("Creating Hybrid Search Pipeline")
+                  pipeline_name = "hybird-search-pipeline-for-mcp-server"
+                  
+                  # First check if the pipeline already exists
+                  try:
+                      logger.info(f"Checking if search pipeline '{pipeline_name}' already exists")
+                      check_response = requests.get(
+                          f"{opensearch_endpoint}/_search/pipeline/{pipeline_name}",
+                          auth=awsauth,
+                          headers=headers,
+                          verify=False
+                      )
+                      
+                      # If pipeline exists (200 OK), delete it first
+                      if check_response.status_code == 200:
+                          logger.info(f"Search pipeline '{pipeline_name}' already exists. Deleting it first.")
+                          delete_response = requests.delete(
+                              f"{opensearch_endpoint}/_search/pipeline/{pipeline_name}",
+                              auth=awsauth,
+                              headers=headers,
+                              verify=False
+                          )
+                          logger.info(f"Delete pipeline response: {delete_response.status_code} - {delete_response.text}")
+                          
+                          if delete_response.status_code >= 400:
+                              logger.warning(f"Failed to delete existing pipeline: {delete_response.text}")
+                      elif check_response.status_code != 404:
+                          logger.warning(f"Unexpected response when checking pipeline: {check_response.status_code} - {check_response.text}")
+                  except Exception as e:
+                      logger.warning(f"Error checking/deleting existing pipeline: {str(e)}")
+                  
+                  # Define the hybrid search pipeline payload
+                  search_pipeline_payload = {
+                      "description": "Post processor for hybrid search",
+                      "phase_results_processors": [
+                          {
+                              "normalization-processor": {
+                                  "normalization": {
+                                      "technique": "min_max"
+                                  },
+                                  "combination": {
+                                      "technique": "arithmetic_mean",
+                                      "parameters": {
+                                          "weights": [
+                                              0.6,
+                                              0.4
+                                          ]
+                                      }
+                                  }
+                              }
+                          }
+                      ]
+                  }
+                  
+                  # Create the hybrid search pipeline
+                  try:
+                      logger.info(f"Creating hybrid search pipeline '{pipeline_name}'")
+                      response = requests.put(
+                          f"{opensearch_endpoint}/_search/pipeline/{pipeline_name}",
+                          auth=awsauth,
+                          json=search_pipeline_payload,
+                          headers=headers,
+                          verify=False
+                      )
+                      logger.info(f"Hybrid search pipeline creation response: {response.status_code} - {response.text}")
+                      if response.status_code >= 400:
+                          raise Exception(f"Failed to create hybrid search pipeline: {response.text}")
+                  except Exception as e:
+                      logger.error(f"Error creating hybrid search pipeline: {str(e)}")
+                      raise e
+                  
+                  logger.info("Sending success response to CloudFormation")
+                  send_cfn_response(event, context, SUCCESS, responseData)
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'embeddingConnectorId': embedding_connector_id,
+                          'embeddingModelId': embedding_model_id
+                      })
+                  }
+              except Exception as e:
+                  error_message = str(e)
+                  logger.error(f"Error: {error_message}")
+                  send_cfn_response(event, context, FAILED, {"Error": error_message})
+                  raise e
+
+  # Custom resource to trigger OpenSearch configuration
+  OpenSearchConfigurationCustomResource:
+    Type: Custom::OpenSearchConfiguration
+    DependsOn:
+      - InvokeEmbeddingModelRole
+      - CreateMLConnectorRole
+      - OpenSearchConfigurationLambda
+    Properties:
+      ServiceToken: !GetAtt OpenSearchConfigurationLambda.Arn
+      Region: !Ref Region
+      
+  # EC2 Instance Security Group (if not provided)
+  AppServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Condition: CreateSecurityGroup
+    Properties:
+      GroupDescription: Security group for EMR Upgrade Assistant application server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access
+        - IpProtocol: tcp
+          FromPort: 5001
+          ToPort: 5001
+          CidrIp: 0.0.0.0/0
+          Description: Application access
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-app-server-sg"
+          
+  # IAM Role for EC2 Instance
+  AppServerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: OpenSearchAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - es:ESHttpGet
+                  - es:ESHttpPost
+                  - es:ESHttpPut
+                Resource: !Sub 'arn:aws:es:${Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*'
+        - PolicyName: SecretsManagerAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: 
+                  - !Sub 'arn:aws:secretsmanager:${Region}:${AWS::AccountId}:secret:${OpenSearchCredentialsSecretName}*'
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                  - bedrock:ListCustomModels
+                Resource: 
+                  # Claude models used by Strands Agents and mem0
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/us.anthropic.claude-sonnet-4-20250514-v1:0'
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-sonnet-4-20250514-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/us.anthropic.claude-sonnet-4-20250514-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/us.anthropic.claude-3-5-sonnet-20241022-v2:0'
+                  # Claude 3.7 Sonnet model
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/us.anthropic.claude-3-7-sonnet-20250109-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/us.anthropic.claude-3-7-sonnet-20250109-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/us.anthropic.claude-3-7-sonnet-20250109-v1:0'
+                  # Additional Claude models for fallback
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0'
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20241022-v2:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0'
+                  # Titan embedding model for OpenSearch
+                  - !Sub 'arn:aws:bedrock:${Region}::foundation-model/amazon.titan-embed-text-v2:0'
+                  - !Sub 'arn:aws:bedrock:us-east-1::foundation-model/amazon.titan-embed-text-v2:0'
+                  - !Sub 'arn:aws:bedrock:us-west-2::foundation-model/amazon.titan-embed-text-v2:0'
+              # Allow cross-region Bedrock access for model availability
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:ListFoundationModels
+                  - bedrock:GetFoundationModel
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    "bedrock:region": 
+                      - !Ref Region
+                      - "us-east-1"
+                      - "us-west-2"
+                
+  AppServerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppServerRole
+        
+  # EC2 Instance for EMR Upgrade Assistant Application
+  AppServer:
+    Type: AWS::EC2::Instance
+    DependsOn: OpenSearchConfigurationCustomResource
+    Properties:
+      InstanceType: c6i.large
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", AMI]
+      KeyName: !Ref KeyName
+      SecurityGroupIds:
+        - !If [CreateSecurityGroup, !Ref AppServerSecurityGroup, !Ref InstanceSecurityGroup]
+      SubnetId: !Ref SubnetId
+      IamInstanceProfile: !Ref AppServerInstanceProfile
+      Tags:
+        - Key: Name
+          Value: !Sub "${AWS::StackName}-emr-upgrade-assistant-server"
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          
+          # Update system packages
+          yum update -y
+          yum install -y git gcc openssl-devel bzip2-devel libffi-devel zlib-devel wget make jq
+          
+          # Install Python 3.11 from source (compatible with strands-agents)
+          cd /opt
+          wget https://www.python.org/ftp/python/3.11.9/Python-3.11.9.tgz
+          tar xzf Python-3.11.9.tgz
+          cd Python-3.11.9
+          ./configure --enable-optimizations
+          make -j $(nproc)
+          make altinstall
+          
+          # Verify Python 3.11 installation
+          /usr/local/bin/python3.11 --version
+          /usr/local/bin/pip3.11 --version
+          
+          # Clone the repository
+          cd /home/ec2-user
+          git clone https://github.com/norrishuang/amazon-emr-upgrade-assistant.git
+          chown -R ec2-user:ec2-user amazon-emr-upgrade-assistant
+          
+          cd amazon-emr-upgrade-assistant
+          
+          # Set up environment file for emr_upgrade_assistant
+          cp emr_upgrade_assistant/.env.example emr_upgrade_assistant/.env
+          
+          # Extract OpenSearch host from endpoint URL
+          OPENSEARCH_HOST=$(echo "${OpenSearchDomainEndpoint}" | sed -e 's|^https://||' -e 's|^http://||')
+          
+          # Get OpenSearch credentials from Secrets Manager
+          SECRET_VALUE=$(aws secretsmanager get-secret-value --secret-id ${OpenSearchCredentialsSecretName} --region ${AWS::Region} --query SecretString --output text)
+          OPENSEARCH_USER=$(echo $SECRET_VALUE | jq -r '.username')
+          OPENSEARCH_PASSWORD=$(echo $SECRET_VALUE | jq -r '.password')
+          
+          # Update environment variables for emr_upgrade_assistant
+          sed -i "s|AWS_REGION=.*|AWS_REGION=${AWS::Region}|" emr_upgrade_assistant/.env
+          sed -i "s|OPENSEARCH_HOST=.*|OPENSEARCH_HOST=$OPENSEARCH_HOST|" emr_upgrade_assistant/.env
+          sed -i "s|OPENSEARCH_PORT=.*|OPENSEARCH_PORT=443|" emr_upgrade_assistant/.env
+          sed -i "s|OPENSEARCH_SECRET_NAME=.*|OPENSEARCH_SECRET_NAME=${OpenSearchCredentialsSecretName}|" emr_upgrade_assistant/.env
+          sed -i "s|OPENSEARCH_INDEX=.*|OPENSEARCH_INDEX=emr_upgrade_hive|" emr_upgrade_assistant/.env
+          sed -i "s|OPENSEARCH_EMBEDDING_MODEL_ID=.*|OPENSEARCH_EMBEDDING_MODEL_ID=${OpenSearchConfigurationCustomResource.embeddingModelId}|" emr_upgrade_assistant/.env
+          
+          # Configure mem0 environment variables for emr_upgrade_assistant
+          sed -i "s|MEM0_ENABLED=.*|MEM0_ENABLED=true|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_HOST=.*|MEM0_OPENSEARCH_HOST=$OPENSEARCH_HOST|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_PORT=.*|MEM0_OPENSEARCH_PORT=443|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_USERNAME=.*|MEM0_OPENSEARCH_USERNAME=$OPENSEARCH_USER|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_PASSWORD=.*|MEM0_OPENSEARCH_PASSWORD=$OPENSEARCH_PASSWORD|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_USE_SSL=.*|MEM0_OPENSEARCH_USE_SSL=true|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_VERIFY_CERTS=.*|MEM0_OPENSEARCH_VERIFY_CERTS=false|" emr_upgrade_assistant/.env
+          sed -i "s|MEM0_OPENSEARCH_INDEX=.*|MEM0_OPENSEARCH_INDEX=emr_assistant_memories|" emr_upgrade_assistant/.env
+          
+          # Set up environment file for mcp_server
+          cp mcp_server/.env.example mcp_server/.env
+          
+          # Update environment variables for mcp_server
+          sed -i "s|AWS_REGION=.*|AWS_REGION=${AWS::Region}|" mcp_server/.env
+          sed -i "s|OPENSEARCH_HOST=.*|OPENSEARCH_HOST=$OPENSEARCH_HOST|" mcp_server/.env
+          sed -i "s|OPENSEARCH_PORT=.*|OPENSEARCH_PORT=443|" mcp_server/.env
+          sed -i "s|OPENSEARCH_SECRET_NAME=.*|OPENSEARCH_SECRET_NAME=${OpenSearchCredentialsSecretName}|" mcp_server/.env
+          sed -i "s|OPENSEARCH_INDEX=.*|OPENSEARCH_INDEX=emr_upgrade_hive|" mcp_server/.env
+          sed -i "s|OPENSEARCH_EMBEDDING_MODEL_ID=.*|OPENSEARCH_EMBEDDING_MODEL_ID=${OpenSearchConfigurationCustomResource.embeddingModelId}|" mcp_server/.env
+          
+          # Install dependencies for emr_upgrade_assistant using Python 3.11
+          cd emr_upgrade_assistant
+          /usr/local/bin/pip3.11 install --upgrade pip
+          /usr/local/bin/pip3.11 install -r requirements.txt
+          
+          # Install dependencies for mcp_server
+          cd ../mcp_server
+          /usr/local/bin/pip3.11 install -r requirements.txt
+          
+          # Make start script executable and start the application
+          cd ../emr_upgrade_assistant
+          chmod +x start.sh
+          
+          # Modify start.sh to use Python 3.11
+          sed -i 's|python3|/usr/local/bin/python3.11|g' start.sh
+          sed -i 's|pip install|/usr/local/bin/pip3.11 install|g' start.sh
+          
+          # Start the application as ec2-user
+          sudo -u ec2-user bash -c 'cd /home/ec2-user/amazon-emr-upgrade-assistant/emr_upgrade_assistant && nohup ./start.sh > app.log 2>&1 &'
+          
+          # Wait a moment to ensure the application has started
+          sleep 10
+          
+          # Signal CloudFormation that the instance is ready
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource AppServer --region ${AWS::Region}
+
+Outputs:
+  InvokeEmbeddingModelRoleArn:
+    Description: ARN of the role used to invoke Bedrock embedding models
+    Value: !GetAtt InvokeEmbeddingModelRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-InvokeEmbeddingModelRoleArn"
+  
+  CreateMLConnectorRoleArn:
+    Description: ARN of the role used to create ML connectors in OpenSearch
+    Value: !GetAtt CreateMLConnectorRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-CreateMLConnectorRoleArn"
+  
+  OpenSearchConfigurationLambdaArn:
+    Description: ARN of the Lambda function that configures OpenSearch
+    Value: !GetAtt OpenSearchConfigurationLambda.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-OpenSearchConfigurationLambdaArn"
+  
+  EmbeddingConnectorId:
+    Description: ID of the Titan Embedding connector
+    Value: !GetAtt OpenSearchConfigurationCustomResource.embeddingConnectorId
+  
+  EmbeddingModelId:
+    Description: ID of the Titan Embedding ML model
+    Value: !GetAtt OpenSearchConfigurationCustomResource.embeddingModelId
+  
+  HybridSearchPipelineName:
+    Description: Name of the OpenSearch hybrid search pipeline created for MCP server
+    Value: "hybird-search-pipeline-for-mcp-server"
+    Export:
+      Name: !Sub "${AWS::StackName}-HybridSearchPipelineName"
+      
+  AppServerPublicIP:
+    Description: Public IP address of the application server
+    Value: !GetAtt AppServer.PublicIp
+    
+  AppServerPublicDNS:
+    Description: Public DNS name of the application server
+    Value: !GetAtt AppServer.PublicDnsName
+    
+  ApplicationURL:
+    Description: URL to access the EMR Upgrade Assistant application
+    Value: !Sub "http://${AppServer.PublicDnsName}:5001/"
+    
+  KnowledgeBaseIndex:
+    Description: Name of the OpenSearch index for EMR upgrade knowledge base
+    Value: "emr_upgrade_hive"
+    Export:
+      Name: !Sub "${AWS::StackName}-KnowledgeBaseIndex"
+      
+  MemoryIndex:
+    Description: Name of the OpenSearch index for mem0 memories
+    Value: "emr_assistant_memories"
+    Export:
+      Name: !Sub "${AWS::StackName}-MemoryIndex"

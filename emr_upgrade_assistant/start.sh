@@ -55,4 +55,5 @@ echo ""
 
 # python app.py
 export LOG_LEVEL=DEBUG
-hypercorn app:app --bind 0.0.0.0:5001
+# 使用更稳定的 Hypercorn 配置，禁用自动重载避免重复启动
+hypercorn app:app --bind 0.0.0.0:5001 --workers 1 --access-logfile - --error-logfile -

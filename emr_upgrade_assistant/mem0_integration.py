@@ -18,7 +18,14 @@ if not os.path.exists(log_dir):
 # 配置日志记录器
 def setup_logger():
     logger = logging.getLogger('emr_assistant')
+    
+    # 如果logger已经有handlers，说明已经初始化过了，直接返回
+    if logger.handlers:
+        return logger
+        
     logger.setLevel(logging.DEBUG)
+    # 防止日志传播到根logger，避免重复输出
+    logger.propagate = False
     
     # 创建格式化器
     formatter = logging.Formatter(
@@ -97,16 +104,16 @@ class Mem0Integration:
                         "model": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # 使用 Claude 4.0 (Sonnet)
                         "temperature": 0.1,
                         "max_tokens": 2000,
-                        "aws_access_key_id": os.environ.get("AWS_ACCESS_KEY_ID"),
-                        "aws_secret_access_key": os.environ.get("AWS_SECRET_ACCESS_KEY"),
+                        # "aws_access_key_id": os.environ.get("AWS_ACCESS_KEY_ID"),
+                        # "aws_secret_access_key": os.environ.get("AWS_SECRET_ACCESS_KEY"),
                     }
                 },
                 "embedder": {
                     "provider": "aws_bedrock", 
                     "config": {
                         "model": "amazon.titan-embed-text-v2:0",
-                        "aws_access_key_id": os.environ.get("AWS_ACCESS_KEY_ID"),
-                        "aws_secret_access_key": os.environ.get("AWS_SECRET_ACCESS_KEY")
+                        # "aws_access_key_id": os.environ.get("AWS_ACCESS_KEY_ID"),
+                        # "aws_secret_access_key": os.environ.get("AWS_SECRET_ACCESS_KEY")
                     }
                 },
                 "vector_store": {

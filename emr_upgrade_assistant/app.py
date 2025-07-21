@@ -25,7 +25,14 @@ if not os.path.exists(log_dir):
 # 配置日志记录器
 def setup_logger():
     logger = logging.getLogger('emr_assistant')
+    
+    # 如果logger已经有handlers，说明已经初始化过了，直接返回
+    if logger.handlers:
+        return logger
+        
     logger.setLevel(logging.DEBUG)
+    # 防止日志传播到根logger，避免重复输出
+    logger.propagate = False
     
     # 创建格式化器
     formatter = logging.Formatter(
