@@ -30,7 +30,7 @@ def setup_logger():
     if logger.handlers:
         return logger
         
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     # 防止日志传播到根logger，避免重复输出
     logger.propagate = False
     
@@ -105,6 +105,18 @@ class EMRUpgradeAssistant:
                 )
             ))
             
+            # 3. AWS Documentation MCP 服务器 - 用于查询 AWS 文档
+            self.aws_docs_client = MCPClient(lambda: stdio_client(
+                StdioServerParameters(
+                    command="uvx",
+                    args=["awslabs.aws-documentation-mcp-server@latest"],
+                    env={
+                        "FASTMCP_LOG_LEVEL": "ERROR",
+                        "AWS_DOCUMENTATION_PARTITION": "aws"
+                    }
+                )
+            ))
+            
             logger.info("✅ MCP 客户端初始化成功")
             logger.debug(f"📡 MCP Server 目录: {mcp_server_dir}")
             
@@ -145,7 +157,8 @@ class EMRUpgradeAssistant:
 当用户询问 EMR 升级相关问题时：
 1. 如果需要最新的信息，请使用 mcp_langgraph_crawler_web_search_tool 工具搜索互联网上的最新信息
 2. 如果需要查看特定网页的内容，请使用 mcp_langgraph_crawler_crawl_tool 工具抓取网页内容
-3. 如果需要本地知识库信息，请使用 search_context 工具检索相关信息
+3. 如果需要查询 AWS 官方文档，请使用 AWS 文档工具（如 aws_docs_search）获取准确的 AWS 服务信息
+4. 如果需要本地知识库信息，请使用 search_context 工具检索相关信息
 
 然后基于检索结果提供专业的回答。
 
@@ -320,9 +333,18 @@ class EMRUpgradeAssistant:
             except Exception as crawler_error:
                 logger.error(f"⚠️ 获取langgraph-crawler工具失败: {str(crawler_error)}")
             
+            # 获取AWS文档MCP服务器的工具
+            aws_docs_tools = []
+            try:
+                with self.aws_docs_client:
+                    aws_docs_tools = self.aws_docs_client.list_tools_sync()
+                    logger.debug(f"🔧 获取到 {len(aws_docs_tools)} 个AWS文档工具")
+            except Exception as aws_docs_error:
+                logger.error(f"⚠️ 获取AWS文档工具失败: {str(aws_docs_error)}")
+            
             # 合并所有工具
-            all_tools = mcp_tools + mem0_tools + crawler_tools
-            logger.debug(f"🔧 总共获取到 {len(all_tools)} 个工具: {len(mcp_tools)}个主MCP工具 + {len(mem0_tools)}个mem0工具 + {len(crawler_tools)}个crawler工具")
+            all_tools = mcp_tools + mem0_tools + crawler_tools + aws_docs_tools
+            logger.debug(f"🔧 总共获取到 {len(all_tools)} 个工具: {len(mcp_tools)}个主MCP工具 + {len(mem0_tools)}个mem0工具 + {len(crawler_tools)}个crawler工具 + {len(aws_docs_tools)}个AWS文档工具")
             
             # 使用主MCP客户端的上下文管理器
             with self.mcp_client:

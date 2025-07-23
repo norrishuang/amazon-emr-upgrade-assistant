@@ -24,6 +24,9 @@ pip install strands-agents
 pip install strands-agents-tools
 pip install strands-agents-builder
 
+echo "🚀 安装 Nodejs..."
+sudo dnf install nodejs npm
+
 # 如果没有安装 uv，请先安装
 pip install uv
 

@@ -23,7 +23,7 @@ def setup_logger():
     if logger.handlers:
         return logger
         
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     # 防止日志传播到根logger，避免重复输出
     logger.propagate = False
     
