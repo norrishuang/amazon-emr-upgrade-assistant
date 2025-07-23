@@ -1,8 +1,11 @@
 flask>=2.3.0
 python-dotenv>=1.0.0
-strands-agents
-strands-agents-tools
-strands-agents-builder
+strands-agents>=0.1.0
+strands-agents-tools>=0.1.0
+strands-agents-builder>=0.1.0
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation
 gunicorn>=21.2.0
 waitress>=2.1.2
 mem0ai

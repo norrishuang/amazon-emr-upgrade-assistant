@@ -127,6 +127,12 @@
                     <p class="text-gray-600">基于 AI 的智能 EMR 升级指导，帮您解决版本升级中的各种问题</p>
                 </div>
                 <div class="flex flex-col space-y-2">
+                    <button id="sessionStatusBtn" class="px-3 py-1 bg-purple-500 text-white rounded text-sm hover:bg-purple-600 transition-colors">
+                        🔄 会话状态
+                    </button>
+                    <button id="clearSessionBtn" class="px-3 py-1 bg-yellow-500 text-white rounded text-sm hover:bg-yellow-600 transition-colors">
+                        🗑️ 清除会话
+                    </button>
                     <button id="memoryStatsBtn" class="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600 transition-colors">
                         📊 记忆统计
                     </button>
@@ -191,6 +197,17 @@
 
     <script>
         let isLoading = false;
+        
+        // 添加会话管理按钮事件监听器
+        document.addEventListener('DOMContentLoaded', function() {
+            document.getElementById('sessionStatusBtn').addEventListener('click', showSessionStatus);
+            document.getElementById('clearSessionBtn').addEventListener('click', clearSession);
+            document.getElementById('memoryStatsBtn').addEventListener('click', showMemoryStats);
+            document.getElementById('recentMemoriesBtn').addEventListener('click', showRecentMemories);
+            document.getElementById('clearMemoriesBtn').addEventListener('click', function() {
+                alert('清除记忆功能尚未实现');
+            });
+        });
 
         function handleKeyDown(event) {
             if (event.key === 'Enter') {
@@ -646,6 +663,64 @@
             return div.innerHTML;
         }
 
+        // 会话管理功能
+        async function showSessionStatus() {
+            try {
+                const response = await fetch('/session/status');
+                const data = await response.json();
+                
+                if (data.success) {
+                    let message = `🔄 会话状态信息：\n\n`;
+                    message += `• 会话ID: ${data.session_id}\n`;
+                    
+                    if (!data.session_management_available) {
+                        message += `• 会话管理: ❌ 不可用\n`;
+                        message += `• 原因: Strands Agents 库版本过低，需要升级\n`;
+                        message += `• 建议: 升级 Strands Agents 库以启用会话管理功能\n`;
+                    } else {
+                        message += `• 会话管理: ✅ 可用\n`;
+                        message += `• 会话存在: ${data.session_exists ? '✅ 是' : '❌ 否'}\n`;
+                        message += `• 会话消息数: ${data.message_count || 0}\n`;
+                    }
+                    
+                    message += `• 时间戳: ${data.timestamp ? data.timestamp.substring(0, 19) : '未知'}\n`;
+                    
+                    alert(message);
+                } else {
+                    alert(`❌ 获取会话状态失败: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ 网络错误: ${error.message}`);
+            }
+        }
+        
+        async function clearSession() {
+            if (!confirm('⚠️ 确定要清除当前会话吗？这将重置当前对话上下文，但不会影响长期记忆。')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/session/clear', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ 会话已成功清除，新会话ID: ${data.new_session_id}`);
+                    // 刷新页面以开始新会话
+                    window.location.reload();
+                } else {
+                    alert(`❌ 清除会话失败: ${data.error}`);
+                }
+            } catch (error) {
+                alert(`❌ 网络错误: ${error.message}`);
+            }
+        }
+        
         // 记忆管理功能
         async function showMemoryStats() {
             try {

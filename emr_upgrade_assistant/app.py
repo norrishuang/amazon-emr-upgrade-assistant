@@ -1,5 +1,10 @@
+# 在导入其他模块之前设置环境变量以禁用 OpenTelemetry
+import os
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["OTEL_PYTHON_DISABLED"] = "true"
+
 from quart import Quart, render_template, request, jsonify, Response, session
-import os, sys
+import sys
 import json
 import asyncio
 from typing import Dict, Any
@@ -12,6 +17,7 @@ from logging.handlers import RotatingFileHandler
 # 根据官方文档导入 Strands Agents 和 MCP 相关模块
 from mcp import stdio_client, StdioServerParameters
 from strands import Agent
+from strands.session.file_session_manager import FileSessionManager
 from strands.tools.mcp import MCPClient
 from mem0_integration import create_mem0_integration
 from mem0_tools import mem0_tools
@@ -60,6 +66,28 @@ def setup_logger():
 # 初始化日志记录器
 logger = setup_logger()
 
+# 尝试导入会话管理模块，如果不可用则使用兼容模式
+try:
+    from strands.session.file_session_manager import FileSessionManager
+    SESSION_MANAGEMENT_AVAILABLE = True
+    logger.info("✅ Strands 会话管理功能可用")
+except ImportError as import_error:
+    SESSION_MANAGEMENT_AVAILABLE = False
+    import traceback
+    error_stack = traceback.format_exc()
+    logger.error(f"⚠️ Strands 会话管理功能导入失败: {str(import_error)}")
+    logger.error(f"详细错误堆栈:\n{error_stack}")
+    logger.warning("⚠️ 将使用兼容模式运行，没有会话管理功能")
+    
+    # 创建一个空的 FileSessionManager 类作为占位符
+    class FileSessionManager:
+        def __init__(self, session_id=None, storage_dir=None):
+            self.session_id = session_id
+            self.storage_dir = storage_dir
+            logger.debug(f"创建兼容模式会话管理器: session_id={session_id}, storage_dir={storage_dir}")
+
+
+
 load_dotenv()
 
 app = Quart(__name__)
@@ -80,6 +108,9 @@ class EMRUpgradeAssistant:
             self.mem0 = None
             
             logger.info("🚀 开始初始化 EMR 升级助手...")
+
+            self.bedrock_region = os.getenv('BEDROCK_REGION', 'us-east-1')
+            self.bedorck_model = os.getenv('BEDROCK_MODEL_ID', 'us-east-1')
             
             # 根据官方文档配置 MCP 客户端
             # 参考: https://strandsagents.com/latest/user-guide/concepts/tools/mcp-tools/
@@ -87,6 +118,15 @@ class EMRUpgradeAssistant:
             # 获取项目根目录和 MCP Server 目录
             project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
             mcp_server_dir = os.path.join(project_root, 'mcp_server')
+            
+            # 创建会话目录用于存储 Strands 会话数据（如果会话管理可用）
+            self.sessions_dir = os.path.join(project_root, 'sessions')
+            if SESSION_MANAGEMENT_AVAILABLE:
+                if not os.path.exists(self.sessions_dir):
+                    os.makedirs(self.sessions_dir)
+                    logger.info(f"✅ 创建会话目录: {self.sessions_dir}")
+            else:
+                logger.info("⚠️ 会话管理不可用，将使用兼容模式")
             
             # 创建多个 MCP 客户端
             # 1. 主 MCP 服务器
@@ -153,10 +193,11 @@ class EMRUpgradeAssistant:
 - 突出重要的注意事项和风险点
 - 使用中文回答
 - 结构化回答，使用标题和要点
+- 利用你的会话记忆，记住用户之前在本次对话中提到的信息，保持对话连贯性
 
 当用户询问 EMR 升级相关问题时：
 1. 如果需要最新的信息，请使用 mcp_langgraph_crawler_web_search_tool 工具搜索互联网上的最新信息
-2. 如果需要查看特定网页的内容，请使用 mcp_langgraph_crawler_crawl_tool 工具抓取网页内容
+2. 如果需要查看特定网页的内容，请使用 mcp_langgraph_crawler_crawl_tool 工具抓取跟 Apache 社区官方相关的网页内容，包括不限于 [hive/spark/flink/hbase/hadoop/sqoop/tez/iceberg].apache.org issues.apache.org，stackoverflow.com
 3. 如果需要查询 AWS 官方文档，请使用 AWS 文档工具（如 aws_docs_search）获取准确的 AWS 服务信息
 4. 如果需要本地知识库信息，请使用 search_context 工具检索相关信息
 
@@ -303,6 +344,27 @@ class EMRUpgradeAssistant:
                 "timestamp": datetime.now().isoformat()
             }
 
+    async def _handle_otel_context_error(self, coro):
+        """
+        处理 OpenTelemetry 上下文错误的辅助函数
+        
+        Args:
+            coro: 要执行的协程
+            
+        Returns:
+            协程的结果
+        """
+        try:
+            return await coro
+        except ValueError as e:
+            if "was created in a different Context" in str(e):
+                # 忽略 OpenTelemetry 上下文错误
+                logger.debug(f"忽略 OpenTelemetry 上下文错误: {str(e)}")
+                return None
+            else:
+                # 重新抛出其他 ValueError
+                raise
+
     async def process_query_stream(self, user_query: str, user_id: str = None):
         """
         流式处理用户查询 - 使用 Strands Agent 真正的流式响应
@@ -349,20 +411,111 @@ class EMRUpgradeAssistant:
             # 使用主MCP客户端的上下文管理器
             with self.mcp_client:
                 try:
-                    bedrock_model = BedrockModel(
-                        model_id="us.anthropic.claude-sonnet-4-20250514-v1:0",
-                        region_name="us-east-1",
-                        temperature=0.3,
-                    )
-                    agent = Agent(
-                        tools=all_tools,
-                        callback_handler=None
-                    )
-                    logger.debug("✅ 成功创建使用 Agent")
+                    logger.debug("🔧 开始创建 BedrockModel...")
+                    try:
+                        bedrock_model = BedrockModel(
+                            model_id=self.bedorck_model,
+                            region_name=self.bedrock_region,
+                            temperature=0.3,
+                        )
+                        logger.debug("✅ BedrockModel 创建成功")
+                    except Exception as bedrock_error:
+                        import traceback
+                        logger.error(f"❌ BedrockModel 创建失败: {str(bedrock_error)}")
+                        logger.error(f"BedrockModel 错误堆栈:\n{traceback.format_exc()}")
+                        raise  # 重新抛出异常
+                    
+                    # 根据会话管理可用性决定如何创建 Agent
+                    if SESSION_MANAGEMENT_AVAILABLE:
+                        # 创建 Strands 会话管理器 - 用于短期记忆
+                        logger.debug(f"🔄 为用户 {user_id} 创建会话管理器")
+                        try:
+                            session_manager = FileSessionManager(
+                                session_id=user_id,
+                                storage_dir=self.sessions_dir
+                            )
+                            logger.debug(f"✅ 会话管理器创建成功: session_id={user_id}")
+                        except Exception as session_error:
+                            import traceback
+                            logger.error(f"❌ 会话管理器创建失败: {str(session_error)}")
+                            logger.error(f"会话管理器错误堆栈:\n{traceback.format_exc()}")
+                            raise  # 重新抛出异常
+                        
+                        # 创建 Agent 时使用会话管理器
+                        logger.debug("🔧 开始创建带会话管理的 Agent...")
+                        try:
+                            agent = Agent(
+                                tools=all_tools,
+                                callback_handler=None,
+                                session_manager=session_manager,  # 添加会话管理器
+                                model=bedrock_model
+                            )
+                            logger.debug("✅ 成功创建使用 Agent 并配置会话管理")
+                        except Exception as agent_error:
+                            import traceback
+                            logger.error(f"❌ 创建带会话管理的 Agent 失败: {str(agent_error)}")
+                            logger.error(f"Agent 创建错误堆栈:\n{traceback.format_exc()}")
+                            raise  # 重新抛出异常
+                    else:
+                        # 不使用会话管理器创建 Agent
+                        logger.debug("🔧 开始创建不带会话管理的 Agent...")
+                        try:
+                            agent = Agent(
+                                tools=all_tools,
+                                callback_handler=None,
+                                model=bedrock_model
+                            )
+                            logger.debug("✅ 成功创建使用 Agent (无会话管理)")
+                        except Exception as agent_error:
+                            import traceback
+                            logger.error(f"❌ 创建不带会话管理的 Agent 失败: {str(agent_error)}")
+                            logger.error(f"Agent 创建错误堆栈:\n{traceback.format_exc()}")
+                            raise  # 重新抛出异常
                 except Exception as model_error:
+                    import traceback
                     logger.error(f"⚠️ 使用 Claude 4.0 Sonnet 创建 Agent 失败: {str(model_error)}")
+                    logger.error(f"详细错误堆栈:\n{traceback.format_exc()}")
                     logger.error("尝试使用默认模型创建 Agent")
-                    agent = Agent(tools=all_tools, callback_handler=None)
+                    
+                    # 根据会话管理可用性决定如何创建 Agent
+                    try:
+                        if SESSION_MANAGEMENT_AVAILABLE:
+                            # 创建会话管理器但使用默认模型
+                            logger.debug(f"🔄 为用户 {user_id} 创建备用会话管理器")
+                            try:
+                                session_manager = FileSessionManager(
+                                    session_id=user_id,
+                                    storage_dir=self.sessions_dir
+                                )
+                                logger.debug(f"✅ 备用会话管理器创建成功")
+                            except Exception as session_error:
+                                import traceback
+                                logger.error(f"❌ 备用会话管理器创建失败: {str(session_error)}")
+                                logger.error(f"备用会话管理器错误堆栈:\n{traceback.format_exc()}")
+                                raise  # 重新抛出异常
+                            
+                            logger.debug("🔧 开始创建带会话管理的备用 Agent...")
+                            agent = Agent(
+                                tools=all_tools, 
+                                callback_handler=None,
+                                session_manager=session_manager  # 添加会话管理器
+                            )
+                            logger.debug("✅ 成功创建带会话管理的备用 Agent")
+                        else:
+                            # 不使用会话管理器创建 Agent
+                            logger.debug("🔧 开始创建不带会话管理的备用 Agent...")
+                            agent = Agent(
+                                tools=all_tools, 
+                                callback_handler=None
+                            )
+                            logger.debug("✅ 成功创建不带会话管理的备用 Agent")
+                    except Exception as fallback_error:
+                        import traceback
+                        logger.error(f"❌ 创建备用 Agent 失败: {str(fallback_error)}")
+                        logger.error(f"备用 Agent 错误堆栈:\n{traceback.format_exc()}")
+                        # 最后的尝试 - 创建一个没有任何额外配置的基本 Agent
+                        logger.error("🔄 最后尝试创建基本 Agent...")
+                        agent = Agent()
                 if hasattr(agent, 'model') and hasattr(agent.model, 'config'):
                     logger.debug(f"🔧 使用模型配置: {agent.model.config}")
                 else:
@@ -386,7 +539,14 @@ class EMRUpgradeAssistant:
                         timeout_seconds = 240  # 增加到240秒
                         
                         # 获取流式响应迭代器
-                        stream_iterator = agent.stream_async(full_query)
+                        try:
+                            stream_iterator = agent.stream_async(full_query)
+                            logger.debug("✅ 成功获取流式响应迭代器")
+                        except Exception as stream_error:
+                            logger.error(f"❌ 获取流式响应迭代器失败: {str(stream_error)}")
+                            import traceback
+                            logger.error(f"流式响应迭代器错误堆栈:\n{traceback.format_exc()}")
+                            raise
                         
                         # 初始化心跳计数器
                         heartbeat_counter = 0
@@ -407,7 +567,16 @@ class EMRUpgradeAssistant:
                             # 等待流式响应或超时
                             try:
                                 # 使用asyncio.wait_for设置超时，但增加超时时间
-                                event = await asyncio.wait_for(stream_iterator.__anext__(), timeout=10.0)
+                                try:
+                                    event = await asyncio.wait_for(stream_iterator.__anext__(), timeout=10.0)
+                                except ValueError as ve:
+                                    if "was created in a different Context" in str(ve):
+                                        # 忽略 OpenTelemetry 上下文错误并继续
+                                        logger.debug(f"忽略 OpenTelemetry 上下文错误: {str(ve)}")
+                                        continue
+                                    else:
+                                        # 重新抛出其他 ValueError
+                                        raise
                                 
                                 # 处理事件
                                 # LLM 内容流式返回
@@ -495,6 +664,7 @@ class EMRUpgradeAssistant:
                     yield chunk
                 if accumulated_response:
                     try:
+                        # 保存到长期记忆 (mem0)
                         user_mem0.add_memory(
                             message="EMR升级咨询对话",
                             user_query=user_query,
@@ -504,7 +674,14 @@ class EMRUpgradeAssistant:
                                 "response_length": len(accumulated_response)
                             }
                         )
-                        logger.debug(f"💾 对话记忆已保存到 mem0 {user_id}")
+                        logger.debug(f"💾 对话长期记忆已保存到 mem0 {user_id}")
+                        
+                        # 短期记忆处理
+                        if SESSION_MANAGEMENT_AVAILABLE:
+                            # 短期记忆由 Strands 会话管理器自动处理
+                            logger.debug(f"💾 对话短期记忆已由 Strands 会话管理器自动保存 (session_id: {user_id})")
+                        else:
+                            logger.debug(f"⚠️ Strands 会话管理不可用，短期记忆未保存")
                     except Exception as mem_error:
                         logger.error(f"⚠️ 保存记忆失败: {str(mem_error)}")
         except Exception as e:
@@ -770,6 +947,71 @@ async def memory_stats():
             'error': f'获取记忆统计失败: {str(e)}'
         }), 500
 
+@app.route('/session/clear', methods=['POST'])
+async def clear_session():
+    """清除当前会话"""
+    try:
+        # 从会话中获取用户ID
+        user_id = session.get('user_id')
+        if not user_id:
+            return jsonify({
+                'success': False,
+                'error': '没有活动的会话'
+            }), 400
+        
+        # 检查会话管理是否可用
+        if not SESSION_MANAGEMENT_AVAILABLE:
+            # 即使会话管理不可用，也生成新的会话ID
+            new_user_id = str(uuid.uuid4())
+            session['user_id'] = new_user_id
+            logger.info(f"✅ 已为用户创建新的会话ID: {new_user_id}")
+            
+            return jsonify({
+                'success': True,
+                'message': '会话管理不可用，但已创建新会话ID',
+                'new_session_id': new_user_id,
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # 删除会话目录
+        import shutil
+        sessions_dir = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), 'sessions')
+        session_dir = os.path.join(sessions_dir, f"session_{user_id}")
+        
+        if os.path.exists(session_dir):
+            shutil.rmtree(session_dir)
+            logger.info(f"✅ 已清除用户 {user_id} 的会话数据")
+            
+            # 生成新的会话ID
+            new_user_id = str(uuid.uuid4())
+            session['user_id'] = new_user_id
+            logger.info(f"✅ 已为用户创建新的会话ID: {new_user_id}")
+            
+            return jsonify({
+                'success': True,
+                'message': '会话已清除，已创建新会话',
+                'new_session_id': new_user_id,
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            # 即使会话目录不存在，也生成新的会话ID
+            new_user_id = str(uuid.uuid4())
+            session['user_id'] = new_user_id
+            logger.info(f"✅ 已为用户创建新的会话ID: {new_user_id}")
+            
+            return jsonify({
+                'success': True,
+                'message': '会话数据不存在，已创建新会话ID',
+                'new_session_id': new_user_id,
+                'timestamp': datetime.now().isoformat()
+            })
+            
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'清除会话失败: {str(e)}'
+        }), 500
+
 @app.route('/memory/search', methods=['POST'])
 async def search_memories():
     """搜索历史记忆"""
@@ -809,6 +1051,57 @@ async def search_memories():
         return jsonify({
             'success': False,
             'error': f'搜索记忆失败: {str(e)}'
+        }), 500
+
+@app.route('/session/status')
+async def get_session_status():
+    """获取当前会话状态"""
+    try:
+        # 从会话中获取用户ID
+        user_id = session.get('user_id')
+        if not user_id:
+            user_id = str(uuid.uuid4())
+            session['user_id'] = user_id
+            logger.info(f"在session/status请求中创建新的用户会话ID: {user_id}")
+        
+        # 检查会话管理是否可用
+        if not SESSION_MANAGEMENT_AVAILABLE:
+            return jsonify({
+                'success': True,
+                'session_id': user_id,
+                'session_management_available': False,
+                'message': '会话管理功能不可用，请升级 Strands Agents 库',
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # 检查会话文件是否存在
+        sessions_dir = os.path.join(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')), 'sessions')
+        session_dir = os.path.join(sessions_dir, f"session_{user_id}")
+        session_exists = os.path.exists(session_dir)
+        
+        # 获取会话消息数量
+        message_count = 0
+        if session_exists:
+            agents_dir = os.path.join(session_dir, "agents")
+            if os.path.exists(agents_dir):
+                for agent_dir in os.listdir(agents_dir):
+                    messages_dir = os.path.join(agents_dir, agent_dir, "messages")
+                    if os.path.exists(messages_dir):
+                        message_count = len([f for f in os.listdir(messages_dir) if f.endswith('.json')])
+        
+        return jsonify({
+            'success': True,
+            'session_id': user_id,
+            'session_management_available': True,
+            'session_exists': session_exists,
+            'message_count': message_count,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'获取会话状态失败: {str(e)}'
         }), 500
 
 @app.route('/memory/recent')

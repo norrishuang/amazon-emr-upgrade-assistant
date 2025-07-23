@@ -6,7 +6,9 @@
 
 - 🤖 **智能对话**: 基于 AI Agent 的自然语言交互
 - 📚 **知识库集成**: 直接调用你已实现的 MCP Server
-- 🧠 **上下文记忆**: 使用 Mem0 存储和检索对话历史，提供个性化体验
+- 🧠 **双层记忆系统**: 
+  - 短期记忆: 使用 Strands Agent 会话管理，保持单次会话的上下文连贯性
+  - 长期记忆: 使用 Mem0 存储和检索跨会话对话历史，提供个性化体验
 - 🔄 **版本升级指导**: 提供详细的 EMR 版本升级建议
 - 🛠️ **组件兼容性**: 分析 Hive、Spark、Flink、HBase 等组件的兼容性
 - 💻 **Web 界面**: 用户友好的聊天界面
@@ -30,15 +32,22 @@
                             │                     │                 │       │
                             │                     ▼                 ▼       ▼
                             │            ┌─────────────────┐ ┌─────────┐ ┌─────────┐
-                            │            │   OpenSearch    │ │ Internet│ │ Other   │
-                            │            │  (Knowledge DB) │ │ Search  │ │ Tools   │
+                            │            │   OpenSearch    │ │ Internet│ │ AWS     │
+                            │            │  (Knowledge DB) │ │ Search  │ │ Docs    │
                             │            └─────────────────┘ └─────────┘ └─────────┘
                             │                     │
                             ▼                     │
-                     ┌─────────────────┐          │
-                     │   Mem0 Memory   │◀─────────┘
-                     │   (User Context)│
-                     └─────────────────┘
+         ┌─────────────────────────┐              │
+         │      记忆系统           │              │
+         │  ┌─────────────────┐    │              │
+         │  │ Strands Session │    │◀─────────────┘
+         │  │  (短期记忆)     │    │
+         │  └─────────────────┘    │
+         │  ┌─────────────────┐    │
+         │  │   Mem0 Memory   │    │
+         │  │   (长期记忆)    │    │
+         │  └─────────────────┘    │
+         └─────────────────────────┘
 ```
 
 ### 核心组件说明
@@ -49,16 +58,19 @@
 4. **MCP Servers**: 
    - 主 MCP 服务器: 提供 `search_context` 工具，连接 OpenSearch 知识库
    - langgraph-crawler MCP 服务器: 提供互联网搜索和网页抓取功能
+   - AWS Documentation MCP 服务器: 提供 AWS 官方文档查询功能
 5. **OpenSearch**: 存储 EMR 升级知识库的搜索引擎，支持混合搜索
 6. **Internet Search**: 通过 langgraph-crawler 获取最新的 EMR 相关信息
-7. **Mem0 Memory**: 基于 OpenSearch 的上下文记忆系统，存储用户对话历史并提供个性化体验
+7. **记忆系统**: 双层记忆架构
+   - **Strands Session**: 基于 Strands Agent 的会话管理，提供短期记忆，保持单次会话的上下文连贯性
+   - **Mem0 Memory**: 基于 OpenSearch 的长期记忆系统，存储用户对话历史并提供跨会话的个性化体验
 
 ## 🚀 快速开始
 
 ### 环境要求
 
 - Python 3.10+
-- Strands Agents SDK API Key
+- Strands Agents SDK 0.5.0+ (支持会话管理功能)
 - AWS 账户（用于 OpenSearch、Bedrock 和 Secrets Manager）
 - OpenSearch 集群（已配置 EMR 知识库）
 - Node.js（用于 langgraph-crawler MCP 服务器）
@@ -107,7 +119,11 @@ OPENSEARCH_SECRET_NAME=opensearch_credentials
 OPENSEARCH_INDEX=opensearch_kl_index
 OPENSEARCH_EMBEDDING_MODEL_ID=your_embedding_model_id
 
-# Mem0 记忆系统配置
+# OpenTelemetry 配置 (避免上下文错误)
+OTEL_SDK_DISABLED=true
+OTEL_PYTHON_DISABLED=true
+
+# Mem0 长期记忆系统配置
 MEM0_ENABLED=true
 MEM0_USER_ID=emr_assistant_user
 MEM0_OPENSEARCH_HOST=your-opensearch-domain.us-east-1.es.amazonaws.com
@@ -224,18 +240,38 @@ pip install -r requirements.txt --force-reinstall
 - 查询处理过程
 - 错误信息
 
-## 🧠 Mem0 记忆系统
+## 🧠 双层记忆系统
 
 ### 功能特点
 
-- **用户隔离**: 每个浏览器会话拥有独立的记忆空间，通过随机生成的用户ID实现
-- **上下文感知**: 自动检索与当前问题相关的历史对话，提供更连贯的回答
-- **长期记忆**: 将重要信息存储在 OpenSearch 中，支持跨会话的知识累积
-- **实时更新**: 每次对话后自动更新记忆，无需手动操作
+#### 短期记忆 (Strands Agent 会话管理)
+- **会话连贯性**: 在单次浏览器会话中保持对话上下文的连贯性
+- **自动管理**: 由 Strands Agent 自动管理会话状态和消息历史
+- **即时响应**: 无需额外检索，直接使用当前会话的上下文
+- **会话隔离**: 每个浏览器会话拥有独立的会话ID和状态
+- **会话管理**: 提供会话状态查询和清除功能
+
+#### 长期记忆 (Mem0)
+- **用户隔离**: 每个浏览器会话拥有独立的长期记忆空间，通过随机生成的用户ID实现
+- **上下文感知**: 自动检索与当前问题相关的历史对话，提供跨会话的连贯回答
+- **知识累积**: 将重要信息存储在 OpenSearch 中，支持跨会话的知识累积
+- **实时更新**: 每次对话后自动更新长期记忆，无需手动操作
 - **记忆管理**: 提供记忆统计、搜索和清除功能
 
 ### 记忆 API
 
+#### 会话管理 API (短期记忆)
+- **获取会话状态**:
+  ```
+  GET /session/status
+  ```
+
+- **清除当前会话**:
+  ```
+  POST /session/clear
+  ```
+
+#### 长期记忆 API (Mem0)
 - **获取记忆统计**:
   ```
   GET /memory/stats
@@ -266,6 +302,10 @@ pip install -r requirements.txt --force-reinstall
 
 EMR Agent 可以使用以下工具来访问记忆系统:
 
+#### 短期记忆工具 (自动管理)
+- 短期记忆由 Strands Agent 会话管理器自动处理，无需显式调用工具
+
+#### 长期记忆工具 (Mem0)
 - `search_conversation_history`: 搜索相关的历史对话
 - `get_recent_conversations`: 获取最近的对话记录
 - `get_memory_statistics`: 获取记忆系统统计信息
@@ -278,11 +318,12 @@ EMR Agent 可以使用以下工具来访问记忆系统:
 ```
 emr_upgrade_assistant/
 ├── app.py              # 主应用文件 (Quart 异步应用)
-├── mem0_integration.py # Mem0 记忆系统集成
+├── mem0_integration.py # Mem0 长期记忆系统集成
 ├── mem0_tools.py       # Mem0 工具集
 ├── requirements.txt    # Python 依赖
 ├── .env.example        # 环境变量模板
 ├── start.sh            # 启动脚本
+├── sessions/           # Strands Agent 会话数据目录
 ├── templates/          # HTML 模板
 │   └── index.html
 └── static/             # 静态文件
